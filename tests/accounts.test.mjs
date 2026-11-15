@@ -1,0 +1,71 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
+import {createAccounts} from '../server/accounts.mjs';
+
+test('accounts persist private projects, enforce revisions, and revoke sessions', async () => {
+ const directory = await mkdtemp(join(tmpdir(),'ow-accounts-test-'));
+ const databasePath = join(directory,'test.sqlite');
+ const origin = 'https://optics.example.test';
+ const password = 'eightabc';
+ let service = createAccounts({databasePath,origin});
+ const make = (path, options={}) => {
+  const {method='GET',cookie,body,from=origin,expected}=options;
+  const headers = {Origin:from};
+  if (cookie) headers.Cookie = cookie;
+  if (expected) headers['X-Workbench-Account'] = expected;
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  return service.handle(new Request(origin+path,{method,headers,body:body===undefined?undefined:JSON.stringify(body)}));
+ };
+ const sign = (name, route='signup', pass=password) => make('/api/'+route,{method:'POST',body:{username:name,password:pass}});
+ const toCookie = response => response.headers.get('set-cookie').split(';')[0];
+ try {
+  assert.equal((await make('/api/projects')).status,401);
+  assert.equal((await make('/api/signup',{method:'POST',from:'https://unrelated.example',body:{username:'Ada',password}})).status,403);
+  assert.equal((await sign('Ada','signup','sevenab')).status,400);
+  const ada = await sign('Ada');
+  assert.equal(ada.status,201);
+  assert.match(ada.headers.get('set-cookie'),/HttpOnly; SameSite=Lax; Path=\/; Max-Age=604800; Secure/);
+  const adaCookie = toCookie(ada);
+  assert.equal((await sign('ADA')).status,409);
+  assert.equal((await sign('Ada','login','incorrect')).status,401);
+  const ben = await sign('Ben');
+  assert.equal(ben.status,201);
+  const benCookie = toCookie(ben);
+  const project = {format:'optical-workbench',version:2,name:'First project',board:null,items:[],assets:[]};
+  const created = await make('/api/projects',{method:'POST',cookie:adaCookie,body:{project}});
+  assert.equal(created.status,201);
+  const record = await created.json(), url='/api/projects/'+record.id;
+  assert.equal(record.revision,1);
+  assert.equal((await (await make('/api/projects',{cookie:adaCookie})).json()).projects[0].id,record.id);
+  assert.deepEqual((await (await make('/api/projects',{cookie:benCookie})).json()).projects,[]);
+  assert.equal((await make('/api/projects',{cookie:benCookie,expected:'Ada'})).status,409);
+  for (const method of ['GET','PUT','DELETE']) assert.equal((await make(url,{method,cookie:benCookie,body:method==='PUT'?{project,revision:1}:undefined})).status,404);
+  const updated = await make(url,{method:'PUT',cookie:adaCookie,body:{project:{...project,name:'Second version'},revision:1}});
+  assert.equal((await updated.json()).revision,2);
+  assert.equal((await make(url,{method:'PUT',cookie:adaCookie,body:{project,revision:1}})).status,409);
+  assert.equal((await make(url,{method:'PUT',cookie:adaCookie,body:{project:{...project,version:99},revision:2}})).status,400);
+  service.close();
+  const inspection = new DatabaseSync(databasePath,{readOnly:true});
+  assert.notEqual(inspection.prepare('SELECT password_hash FROM accounts WHERE username=?').get('Ada').password_hash,password);
+  assert.notEqual(inspection.prepare('SELECT token_hash FROM sessions LIMIT 1').get().token_hash,adaCookie.split('=')[1]);
+  inspection.close();
+  service = createAccounts({databasePath,origin});
+  const login = await sign('ada','login');
+  assert.equal(login.status,200);
+  const secondDevice = toCookie(login);
+  const saved = await (await make(url,{cookie:secondDevice})).json();
+  assert.equal(saved.project.name,'Second version');
+  assert.equal(saved.revision,2);
+  assert.equal((await make(url,{method:'DELETE',cookie:secondDevice})).status,200);
+  assert.equal((await make(url,{cookie:adaCookie})).status,404);
+  assert.equal((await make('/api/logout',{method:'POST',cookie:secondDevice})).status,200);
+  assert.equal((await make('/api/projects',{cookie:secondDevice})).status,401);
+ } finally {
+  service.close();
+  await rm(directory,{recursive:true,force:true});
+ }
+});
