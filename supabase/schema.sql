@@ -284,6 +284,10 @@ begin
         public.workbench_list_projects(text, text), public.workbench_get_project(text, uuid, text),
         public.workbench_save_project(text, json, uuid, integer, text), public.workbench_delete_project(text, uuid, text)
         to %I', v_role);
+      -- Saving a layout with embedded 3D models (several MB) takes longer
+      -- than Supabase's 3 s default limit for browser requests.
+      execute format('alter role %I set statement_timeout = %L', v_role, '60s');
     end if;
   end loop;
 end $$;
+notify pgrst, 'reload config';

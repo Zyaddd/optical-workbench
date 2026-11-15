@@ -26,6 +26,7 @@ const call = async (fn, args, ip = '203.0.113.7') => {
   return res.rows[0].r;
 };
 
+assert.deepEqual((await db.query(`select rolconfig from pg_roles where rolname='anon'`)).rows[0].rolconfig,['statement_timeout=60s']);
 // anon cannot reach the private schema
 await assert.rejects(db.transaction(async tx => {await tx.exec('set local role anon'); await tx.query('select * from workbench.accounts');}), /permission denied/);
 await assert.rejects(db.transaction(async tx => {await tx.exec('set local role anon'); await tx.query(`select workbench.authenticate('x','y',true,null)`);}), /permission denied/);

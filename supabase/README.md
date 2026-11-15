@@ -29,6 +29,7 @@ The landing page's **Launch workbench** button then opens the account edition. *
 
 - **Free projects pause after about a week without use.** Restore the project from the Supabase dashboard if sign-in stops working. Saved data is kept.
 - The free plan has a 500 MB database, shared by all accounts.
+- Layouts that embed imported 3D models can be several MB. On the free plan a 9 MB layout takes about 15–20 seconds to save, so the schema raises the time limit for browser requests to 60 seconds.
 - **There is no password reset.** To set a new password for someone, run this in the SQL Editor, replacing the username and password:
 
   ```sql
