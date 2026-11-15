@@ -1,6 +1,23 @@
-export const accountsEnabled = () => location.protocol !== 'file:' && !!document.querySelector('meta[name="workbench-accounts"]');
+import {AccountError, createCloudTransport} from './cloud-accounts.mjs';
+
+const accountMeta = () => document.querySelector('meta[name="workbench-accounts"]');
+export const accountsEnabled = () => location.protocol !== 'file:' && !!accountMeta();
+
+// The account server edition talks to /api on its own origin.
+async function serverTransport(path, method = 'GET', body, expected) {
+ const headers = {};
+ if (expected) headers['X-Workbench-Account'] = expected;
+ if (body !== undefined) headers['Content-Type'] = 'application/json';
+ const response = await fetch(`/api/${path}`,{method,headers,credentials:'same-origin',cache:'no-store',body:body === undefined ? undefined : JSON.stringify(body)});
+ const data = await response.json();
+ if (!response.ok) throw new AccountError(response.status,data.error || 'Request failed.');
+ return data;
+}
 
 export function mountAccountUI({projectData, openProject, hasWorkspace, toast}) {
+ const meta = accountMeta();
+ const cloud = meta?.content === 'cloud';
+ const transport = cloud ? createCloudTransport({url:meta.dataset.supabaseUrl,key:meta.dataset.supabaseKey}) : serverTransport;
  let username = null;
  let current = null;
  let workspaceRevision = 0;
@@ -37,18 +54,16 @@ export function mountAccountUI({projectData, openProject, hasWorkspace, toast}) 
  nav.append(dashboardButton,saveButton);
 
  async function api(path, method = 'GET', body) {
-  const headers = {};
-  if (username && path.startsWith('projects')) headers['X-Workbench-Account'] = username;
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
-  const response = await fetch(`/api/${path}`,{method,headers,credentials:'same-origin',cache:'no-store',body:body === undefined ? undefined : JSON.stringify(body)});
-  const data = await response.json();
-  if (response.status === 401 && !['login','signup'].includes(path)) {
-   username = null;
-   current = null;
-   renderAccount();
+  const expected = username && path.startsWith('projects') ? username : undefined;
+  try {return await transport(path,method,body,expected);}
+  catch (error) {
+   if (error.status === 401 && !['login','signup'].includes(path)) {
+    username = null;
+    current = null;
+    renderAccount();
+   }
+   throw error;
   }
-  if (!response.ok) throw Error(data.error || 'Request failed.');
-  return data;
  }
  function renderAccount() {
   auth.hidden = !!username;
@@ -57,7 +72,9 @@ export function mountAccountUI({projectData, openProject, hasWorkspace, toast}) 
   if (!username) list.replaceChildren();
  }
  function renderAuthMode() {
-  find('[data-auth-intro]').textContent = signup ? 'Choose a username and a password of at least 8 characters.' : 'Sign in to open your saved projects.';
+  find('[data-auth-intro]').textContent = signup
+   ? 'Choose a username and a password of at least 8 characters. There is no password reset, so keep your password somewhere safe.'
+   : 'Sign in to open your saved projects.';
   auth.elements.password.minLength = signup ? 8 : 1;
   auth.elements.password.autocomplete = signup ? 'new-password' : 'current-password';
   auth.elements.password.value = '';

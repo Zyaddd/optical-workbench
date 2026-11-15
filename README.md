@@ -16,7 +16,12 @@ Open `dist/Optical_Workbench.html` in Chrome or Edge. This build runs offline. T
 
 ## Publish on GitHub Pages
 
-GitHub Pages serves the offline and guest workbench. For usernames, sign-in and saved projects, deploy the account server on an HTTPS host with persistent disk storage. The GitHub repository can contain both builds.
+GitHub Pages serves the offline and guest workbench. For usernames, sign-in and saved projects there are two options:
+
+- **Supabase (no server to run):** connect a free Supabase project and the Pages site gains username and password accounts. See [`supabase/README.md`](supabase/README.md).
+- **Account server:** deploy the Node server below on an HTTPS host with persistent disk storage.
+
+The GitHub repository can contain both builds.
 
 1. Create a public repository named `optical-workbench` with `main` as the default branch. Push this folder as the repository root.
 2. In **Settings → Pages → Build and deployment → Source**, choose **GitHub Actions**.

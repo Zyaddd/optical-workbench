@@ -14,7 +14,7 @@
     "three": "0.180.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
     "esbuild": "0.25.11"
   }
 }
-

@@ -1,6 +1,7 @@
 import './build.mjs';
 import {cp, readFile, writeFile} from 'node:fs/promises';
 import {validateProject, DEFAULT_BOARD} from './src/core.mjs';
+import {cloudAccountPages} from './build-cloud.mjs';
 const load = async name => JSON.parse(await readFile(new URL('./src/'+name+'.json',import.meta.url)));
 const [lasers, defaults] = await Promise.all([load('lasers'),load('default-components')]);
 const modelIds = ['supplied-nanoplus','default-flat-mirror','default-vigo-detector'];
@@ -19,3 +20,13 @@ await Promise.all([
  cp('vendor/license.occt.txt','dist/license.occt.txt'),
  cp('vendor/license.occt-import-js.txt','dist/license.occt-import-js.txt'),
 ]);
+// With SUPABASE_URL and SUPABASE_ANON_KEY set, also publish the account edition (see supabase/README.md).
+const cloud = cloudAccountPages({url:process.env.SUPABASE_URL,key:process.env.SUPABASE_ANON_KEY});
+if (cloud) {
+ const [workbench, homepage] = await Promise.all([readFile('dist/Optical_Workbench.html','utf8'),readFile('web/index.html','utf8')]);
+ await Promise.all([
+  writeFile('dist/Account_Workbench.html',cloud.workbench(workbench)),
+  writeFile('dist/index.html',cloud.homepage(homepage)),
+ ]);
+ console.log('Built the account edition with Supabase accounts.');
+}

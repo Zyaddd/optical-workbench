@@ -15,6 +15,7 @@ Optical Workbench is a Three.js application for laying out laser spectroscopy ex
 - `src/holder-ui.mjs`, `src/holders.mjs`, and `src/transforms.mjs` handle mounting, height, rotation, and groups.
 - `src/core.mjs` validates `.optics.json` files. `src/cad-worker.js` converts imported STEP files locally using the vendored OpenCascade importer.
 - `src/account-ui.mjs`, `server/accounts.mjs`, and `server/start.mjs` implement signup, sign-in, and the saved project dashboard. Account-project storage requires the Node server and a persistent SQLite database. The hosting instructions are in `README.md`.
+- `src/cloud-accounts.mjs`, `build-cloud.mjs` and `supabase/schema.sql` give the GitHub Pages build the same accounts through Supabase when `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set. Setup is in `supabase/README.md`.
 
 ## Original STEP files and runtime meshes
 

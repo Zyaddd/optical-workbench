@@ -18,6 +18,11 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: node build-pages.mjs
+        env:
+          # Repository variables (Settings > Secrets and variables > Actions > Variables).
+          # When both are set, the site also publishes the account edition.
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
       - uses: actions/upload-pages-artifact@v3
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         with:
