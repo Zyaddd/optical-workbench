@@ -26,6 +26,7 @@ export const inRange = (material, wavelength) => { const r = MATERIALS[material]
 // A lens is specified like a catalogue part: focal length at a design wavelength. At another wavelength the
 // thin-lens power scales with (n − 1), which is why a mid-IR lens focuses at a different distance than its label.
 export function effectiveFocal(o, wavelength) {
+ if (o.type === 'spherical') return o.roc / 2;
  if (o.type !== 'lens' || o.material === 'ideal' || !MATERIALS[o.material]) return o.focal;
  return o.focal * (refractiveIndex(o.material, o.designWavelength) - 1) / (refractiveIndex(o.material, wavelength) - 1);
 }
@@ -40,7 +41,7 @@ export const LENS_PRESETS = [
 ].map(p => ({...p, aperture:25.4, label:`${MATERIALS[p.material].name} plano-convex Ø25.4 mm · f ${p.focal} mm at ${p.designWavelength} µm`}));
 
 export const OPTIC_TYPES = {
- none:'Not optical', laser:'Laser source', lens:'Lens', mirror:'Flat mirror', parabolic:'Focusing (parabolic) mirror', detector:'Detector',
+ none:'Not optical', laser:'Laser source', lens:'Lens', mirror:'Flat mirror', spherical:'Concave (spherical) mirror', parabolic:'Focusing (parabolic) mirror', detector:'Detector',
 };
 const LASER = {type:'laser', wavelength:4.5, spec:'waist', diameter:2.5, divergence:2.5, m2:1.3, waistOffset:0};
 const DEFAULTS = {
@@ -48,6 +49,7 @@ const DEFAULTS = {
  laser:LASER,
  lens:{type:'lens', focal:100, material:'ZnSe', designWavelength:10.6, aperture:25.4},
  mirror:{type:'mirror', aperture:25.4},
+ spherical:{type:'spherical', roc:200, aperture:25.4},
  parabolic:{type:'parabolic', focal:50.8, offAxis:90, aperture:25.4},
  detector:{type:'detector', activeArea:1},
 };
@@ -58,13 +60,16 @@ export function defaultType(asset) {
  if (/lens/i.test(name)) return 'lens';
  if (/parabol|oap/i.test(name)) return 'parabolic';
  if (/detector|vigo|photodiode/i.test(name)) return 'detector';
+ if (/concave|spherical|curved/i.test(name) && /mirror/i.test(name)) return 'spherical';
  if (/mirror/i.test(name)) return 'mirror';
  return 'none';
 }
 export const defaultOptics = type => structuredClone(DEFAULTS[type] || DEFAULTS.none);
 // The optics of a placed item: saved settings over the defaults for its type (or for its asset).
+// The app's built-in mirror is not a catalogue asset, so it is named here to get mirror physics too.
+const BUILTIN = {'builtin-mirror':{id:'builtin-mirror', name:'Mirror with mount'}};
 export function itemOptics(item, asset) {
- const type = item?.optics?.type || defaultType(asset);
+ const type = item?.optics?.type || defaultType(asset || BUILTIN[item?.assetId]);
  return {...defaultOptics(type), ...(item?.optics?.type === type ? item.optics : {}), type};
 }
 
@@ -86,6 +91,7 @@ export function validateOptics(o) {
  if (o.type === 'lens') { take('designWavelength', .2, 30); if (o.material != null) { if (!(o.material in MATERIALS)) bad(); out.material = o.material; } }
  if (o.type === 'parabolic') take('offAxis', 0, 179);
  if (o.type === 'mirror') take('aperture', .1, 1000);
+ if (o.type === 'spherical') { take('roc', -100000, 100000); if (out.roc != null && Math.abs(out.roc) < 1) bad(); take('aperture', .1, 1000); }
  if (o.type === 'detector') take('activeArea', .001, 100);
  return out;
 }
@@ -110,7 +116,7 @@ const sub = (a, b) => a.map((v, k) => v - b[k]);
 const len = v => Math.hypot(...v);
 
 // Trace a drawn beam route physically. Points attached to lenses or focusing mirrors apply their power;
-// flat mirrors and other bounce points only fold the path. Returns per-segment q values for sampling.
+// concave mirrors (f = R/2) likewise; flat mirrors and other bounce points only fold the path. Returns per-segment q values for sampling.
 export function traceGaussian(route, items, assetOf) {
  const find = id => items.find(i => i.id === id);
  const opticsAt = p => { const i = p.itemId && find(p.itemId); return i ? {item:i, optics:itemOptics(i, assetOf(i.assetId))} : {item:null, optics:{type:'none'}}; };
@@ -136,8 +142,16 @@ export function traceGaussian(route, items, assetOf) {
   q = [q[0] + length, q[1]]; s += length;
   const here = opticsAt(route.points[k]), o = here.optics, last = k === world.length - 1;
   const info = {index:k, s, world:world[k], type:o.type, name:here.item?.name || (last ? 'Endpoint' : 'Waypoint'), ...beamAtQ(q, beam)};
-  if (!last && (o.type === 'lens' || o.type === 'parabolic')) {
+  if (!last && (o.type === 'lens' || o.type === 'parabolic' || o.type === 'spherical')) {
    const f = effectiveFocal(o, laserOptics.wavelength);
+   if (o.type === 'spherical') {
+    // A curved mirror used off-axis focuses the two planes differently: f·cosθ in the fold plane, f/cosθ across it.
+    const din = sub(world[k], world[k - 1]), dout = sub(world[k + 1], world[k]);
+    const c = Math.max(-1, Math.min(1, -din.reduce((t, v, j) => t + v * dout[j], 0) / (len(din) * len(dout) || 1)));
+    const theta = Math.acos(c) / 2;
+    Object.assign(info, {incidence:theta * 180 / Math.PI, fTangential:f * Math.cos(theta), fSagittal:f / Math.cos(theta)});
+    if (theta > 5 * Math.PI / 180) warnings.push(`${info.name}: hit ${(theta * 180 / Math.PI).toFixed(0)}° off-axis, so the focus is astigmatic (${(f * Math.cos(theta)).toFixed(1)} mm in the fold plane, ${(f / Math.cos(theta)).toFixed(1)} mm across it). The model uses f = R/2.`);
+   }
    if (o.type === 'lens' && o.material !== 'ideal' && !inRange(o.material, laserOptics.wavelength)) warnings.push(`${info.name}: ${MATERIALS[o.material].name} is outside its data range (${MATERIALS[o.material].range.join('–')} µm) at ${laserOptics.wavelength} µm and may not transmit.`);
    q = thinLens(q, f);
    const after = beamAtQ(q, beam);

@@ -113,3 +113,26 @@ test('projects keep optics settings and physical beams, and older projects are u
  assert.equal(validateRoutes([{...beam, physics:true}], new Set())[0].physics, true);
  assert.throws(() => validateRoutes([{...beam, physics:'yes'}], new Set()));
 });
+
+test('every mirror has physics: the built-in mirror folds, a concave mirror focuses at R/2 and reports astigmatism off-axis', () => {
+ assert.equal(itemOptics({assetId:'builtin-mirror'}, undefined).type, 'mirror');
+ assert.equal(defaultType({id:'x', name:'Concave mirror f100'}), 'spherical');
+ assert.deepEqual(validateOptics({type:'spherical', roc:300, aperture:25.4}), {type:'spherical', roc:300, aperture:25.4});
+ assert.throws(() => validateOptics({type:'spherical', roc:0}));
+ assert.equal(effectiveFocal({type:'spherical', roc:300}, 4.5), 150);
+ const laser = {id:'L', assetId:'none', x:0, y:0, z:0, angle:0, optics:{type:'laser', wavelength:4.5, spec:'waist', diameter:2.5, m2:1, waistOffset:0}};
+ const cm = {id:'M', assetId:'builtin-mirror', x:0, y:0, z:0, angle:0, optics:{type:'spherical', roc:300}};
+ const pt = (id, x, z) => id ? {itemId:id, x:0, y:0, z:0} : {x, y:0, z};
+ const shift = (it, x, z) => ({...it, x, z});
+ const items = [laser, shift(cm, 200, 0)];
+ // Fold by 20° at the mirror: incidence 10°.
+ const out = [200 - 400 * Math.cos(20 * Math.PI / 180), 400 * Math.sin(20 * Math.PI / 180)];
+ const t = traceGaussian({points:[pt('L'), pt('M'), pt(null, ...out)]}, items, () => null);
+ assert.ok(t.ok, t.error);
+ const m = t.points[1];
+ close(m.f, 150, 1e-9);
+ close(m.incidence, 10, 1e-6);
+ close(m.fTangential, 150 * Math.cos(10 * Math.PI / 180), 1e-9);
+ assert.ok(m.focus > 0 && m.focus < 160);
+ assert.equal(t.warnings.length, 1);
+});

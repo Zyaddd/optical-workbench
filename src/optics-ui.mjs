@@ -167,7 +167,7 @@ export function createOpticsUI(api) {
    grid.append(field(i, o, 'wavelength', 'Wavelength', {unit:'µm', min:.2, max:30, hint:'Centre wavelength from the laser datasheet.'}));
    grid.append(select('opticsSpec', 'Beam size given as', [['waist', 'Waist diameter'], ['divergence', 'Full divergence angle']], o.spec, v => apply(i, {spec:v}, 'spec')));
    grid.append(o.spec === 'divergence' ? field(i, o, 'divergence', 'Full divergence', {unit:'mrad', min:.001, hint:'Full angle of the far-field beam, 1/e².'}) : field(i, o, 'diameter', 'Waist diameter, 1/e²', {unit:'mm', min:.001, hint:'Diameter at the beam’s narrowest point (the collimated beam size for a collimated laser).'}));
-   grid.append(field(i, o, 'm2', 'Beam quality M²', {min:1, max:50, hint:'1 = perfect Gaussian. QCLs are typically 1.1–2.'}));
+   grid.append(field(i, o, 'm2', 'Beam quality M²', {min:1, max:50, hint:'1 = perfect Gaussian. QCLs and ICLs are typically 1.1–2.'}));
    grid.append(field(i, o, 'waistOffset', 'Waist position', {unit:'mm', hint:'Distance from the emission point to the waist along the beam. Negative = behind the aperture.'}));
   } else if (o.type === 'lens') {
    const match = LENS_PRESETS.findIndex(p => p.material === o.material && p.focal === o.focal && p.designWavelength === o.designWavelength);
@@ -179,6 +179,9 @@ export function createOpticsUI(api) {
   } else if (o.type === 'parabolic') {
    grid.append(field(i, o, 'focal', 'Reflected focal length', {unit:'mm', hint:'Distance from the mirror centre to its focus along the reflected beam.'}));
    grid.append(field(i, o, 'offAxis', 'Off-axis angle', {unit:'°', min:0, max:179, hint:'Design fold angle. Draw the beam at this angle for the quoted focal length to hold.'}));
+   grid.append(field(i, o, 'aperture', 'Clear aperture', {unit:'mm', min:.1}));
+  } else if (o.type === 'spherical') {
+   grid.append(field(i, o, 'roc', 'Radius of curvature', {unit:'mm', hint:'From the mirror datasheet. Positive = concave (focusing), negative = convex. Focal length is half of it.'}));
    grid.append(field(i, o, 'aperture', 'Clear aperture', {unit:'mm', min:.1}));
   } else if (o.type === 'mirror') {
    grid.append(field(i, o, 'aperture', 'Clear aperture', {unit:'mm', min:.1}));
@@ -200,11 +203,13 @@ export function createOpticsUI(api) {
    lines.push(o.material === 'ideal' ? `f = ${mm(f)} at every wavelength.` : `At ${lambda} µm: n = ${refractiveIndex(o.material, lambda).toFixed(4)} · f = ${mm(f)} (label ${mm(o.focal)} at ${o.designWavelength} µm)`);
    if (o.material !== 'ideal' && !inRange(o.material, lambda)) lines.push(`${MATERIALS[o.material].name} is outside its data range (${MATERIALS[o.material].range.join('–')} µm) at ${lambda} µm and may not transmit there.`);
   } else if (o.type === 'parabolic') lines.push(`Focuses a collimated beam ${mm(o.focal)} from the mirror, with no colour shift.`);
-  else if (o.type === 'mirror') lines.push('Flat: folds the beam with no focusing power.');
+  else if (o.type === 'spherical') lines.push(`Focal length R/2 = ${mm(o.roc / 2)}, the same at every wavelength.`);
+  else if (o.type === 'mirror') lines.push('Flat: folds the beam with no focusing power. For a curved mirror, set the role to Concave (spherical) mirror.');
   else if (o.type === 'none') lines.push('Beam points on this part only fold or end the path. Set a role to give it optical power.');
   for (const x of traces) {
    const p = at(x);
    if (!p) continue;
+   if (p.incidence != null && p.incidence > .5) lines.push(`${x.b.name}: ${fmt(p.incidence, 1)}° off-axis → f ${fmt(p.fTangential, 1)} mm in the fold plane, ${fmt(p.fSagittal, 1)} mm across it.`);
    if (o.type === 'laser') lines.push(`${x.b.name}: starts here.`);
    else if (p.f != null) lines.push(`${x.b.name}: arrives Ø ${spot(p.d)} → ${p.focus > 0 ? (p.focusReached ? `focus ${fmt(p.focus, 1)} mm after, Ø ${spot(p.focusDiameter)}` : 'next optic is before the focus') : 'diverges after it'}`);
    else lines.push(`${x.b.name}: Ø ${spot(p.d)} here${p.activeArea ? (p.d <= p.activeArea ? ' · fits the active area' : ' · larger than the active area') : ''}`);
@@ -270,17 +275,17 @@ export function createOpticsUI(api) {
 
  // A small, complete bench for the optics tour: laser → lens → detector at one beam height.
  function buildPractice() {
-  const state = getState(), need = ['supplied-alpes-hhl-qcl', 'default-lens', 'default-vigo-detector'];
+  const state = getState(), need = ['supplied-nanoplus', 'default-lens', 'default-vigo-detector'];
   if (need.some(id => !catalog.get(id))) { toast('The practice parts are still loading. Try again in a moment.'); return null; }
   checkpoint();
   const id = () => globalThis.crypto?.randomUUID?.() || 'id-' + Math.random().toString(36).slice(2);
-  // Heights put every optical centre 26 mm above the board: QCL aperture 9 mm + 17, lens centre 26, detector window 20 mm + 6.
-  const laser = {id:id(), name:'QCL laser', assetId:'supplied-alpes-hhl-qcl', x:-165.1, z:12.7, y:17, angle:90, locked:false, partNumber:''};
+  // Heights put every optical centre 26 mm above the board: ICL lens 25 mm + 1, lens centre 26, detector window 20 mm + 6.
+  const laser = {id:id(), name:'ICL laser', assetId:'supplied-nanoplus', x:-165.1, z:12.7, y:1, angle:0, locked:false, partNumber:''};
   const lens = {id:id(), name:'Lens L1', assetId:'default-lens', x:-12.7, z:12.7, y:0, angle:0, locked:false, partNumber:'', optics:{type:'lens', focal:100, material:'ZnSe', designWavelength:10.6, aperture:25.4}};
   const det = {id:id(), name:'MCT detector', assetId:'default-vigo-detector', x:165.1, z:15.1, y:6, angle:270, locked:false, partNumber:''};
   Object.assign(state, {board:{...DEFAULT_BOARD}, secondaryBoard:null, items:[laser, lens, det], measurements:[], name:'Optics practice bench'});
   state.beams = [{id:id(), name:'Beam 1', enabled:true, color:'#ff3434', width:.5, opacity:1, physics:true, points:[
-   {x:0, y:9, z:25.6, itemId:laser.id}, {x:0, y:26, z:0, itemId:lens.id}, {x:-2.4, y:20, z:42.5, itemId:det.id}]}];
+   {x:24.4, y:25, z:0, itemId:laser.id}, {x:0, y:26, z:0, itemId:lens.id}, {x:-2.4, y:20, z:42.5, itemId:det.id}]}];
   commit();
   setSelected(null);
   view('iso');
