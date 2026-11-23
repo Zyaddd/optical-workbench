@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {refractiveIndex, effectiveFocal, laserBeam, traceGaussian, beamAt, focusOnEndpoint, validateOptics, itemOptics, defaultType, envelopeSamples, LENS_PRESETS} from '../src/optics.mjs';
+import {refractiveIndex, effectiveFocal, laserBeam, traceGaussian, beamAt, focusOnEndpoint, validateOptics, itemOptics, defaultType, envelopeSamples, LENS_PRESETS, passRound, passSquare, erf, lensTransmission, surfaceReflectance, mirrorReflectance, fmtPower} from '../src/optics.mjs';
 import {validateProject, DEFAULT_BOARD} from '../src/core.mjs';
 import {validateRoutes} from '../src/routes.mjs';
 
@@ -84,7 +84,7 @@ test('envelope samples include the waist', () => {
 test('a start point off any laser falls back to a default source with a warning', () => {
  const t = traceGaussian({points:[route.points[1], route.points[2]]}, items, id => assets.get(id));
  assert.ok(t.ok);
- assert.equal(t.warnings.length, 1);
+ assert.equal(t.warnings.filter(w => w.startsWith('The start point is not on a laser')).length, 1);
 });
 
 test('roles default from the library part, and settings validate', () => {
@@ -135,4 +135,55 @@ test('every mirror has physics: the built-in mirror folds, a concave mirror focu
  close(m.fTangential, 150 * Math.cos(10 * Math.PI / 180), 1e-9);
  assert.ok(m.focus > 0 && m.focus < 160);
  assert.equal(t.warnings.length, 1);
+});
+
+test('power: Gaussian clipping and capture follow the closed forms', () => {
+ close(erf(1), .8427007929, 2e-7);
+ close(erf(-.5), -.5204998778, 2e-7);
+ close(passRound(2, 2), 1 - Math.exp(-2), 1e-12);   // aperture equal to the 1/e² diameter passes 86.5%
+ close(passRound(25.4, 2.5), 1, 1e-12);
+ close(passSquare(1, .1), 1, 1e-9);
+ close(passSquare(1, 1), erf(Math.SQRT2) ** 2, 1e-12);
+});
+
+test('power: uncoated lenses lose Fresnel reflections; AR and mirror coatings follow typical values', () => {
+ const n = refractiveIndex('ZnSe', 10.6), R = ((n - 1) / (n + 1)) ** 2;
+ close(surfaceReflectance({material:'ZnSe', coating:'uncoated'}, 10.6), R, 1e-12);
+ close(R, .1704, 2e-3);                               // ZnSe reflects about 17% per surface
+ close(lensTransmission({material:'ZnSe', coating:'uncoated'}, 10.6), (1 - R) / (1 + R), 1e-12);
+ close(lensTransmission({material:'ZnSe', coating:'ar'}, 10.6), .995 / 1.005, 1e-12);
+ assert.equal(lensTransmission({material:'ideal', coating:'uncoated'}, 4.5), 1);
+ assert.ok(mirrorReflectance({coating:'gold'}, 4.5) > .97 && mirrorReflectance({coating:'gold'}, .5) < .6);
+ assert.equal(mirrorReflectance({coating:'custom', reflectance:90}, 4.5), .9);
+ assert.equal(fmtPower(12.34), '12.3 mW');
+ assert.equal(fmtPower(.0123), '12.3 µW');
+ assert.throws(() => validateOptics({type:'mirror', coating:'unobtainium'}));
+ assert.throws(() => validateOptics({type:'detector', rangeMin:5, rangeMax:3}));
+ assert.deepEqual(validateOptics({type:'detector', activeArea:1, rangeMin:2, rangeMax:5, responsivity:1000, maxOutput:1}), {type:'detector', activeArea:1, rangeMin:2, rangeMax:5, responsivity:1000, maxOutput:1});
+});
+
+test('power follows the beam: lens loss, aperture clipping, detector capture, signal and saturation', () => {
+ const its = [
+  {id:'L', assetId:'laser', x:0, y:0, z:0, angle:0, optics:{type:'laser', wavelength:4.5, spec:'waist', diameter:2.5, m2:1, waistOffset:0, power:20}},
+  {id:'F', assetId:'lens', x:200, y:0, z:0, angle:0, optics:{type:'lens', focal:100, material:'ZnSe', designWavelength:4.5, aperture:25.4, coating:'uncoated'}},
+  {id:'D', assetId:'det', x:300, y:0, z:0, angle:0, optics:{type:'detector', activeArea:1, rangeMin:2, rangeMax:6, responsivity:1000, maxOutput:5}},
+ ];
+ const t = traceGaussian(route, its, id => assets.get(id));
+ const T = lensTransmission(its[1].optics, 4.5), lens = t.points[1], det = t.points[2];
+ close(lens.powerOut, 20 * T * lens.clip, 1e-9);
+ close(t.power.end, lens.powerOut, 1e-12);
+ close(det.detectedPower, t.power.end * passSquare(1, det.d), 1e-12);
+ close(t.power.signal, det.detectedPower * 1e-3 * 1000, 1e-9);
+ assert.ok(t.warnings.some(w => /uncoated ZnSe reflects/.test(w)));
+ assert.ok(t.warnings.some(w => /saturates/.test(w)));   // about 14 mW x 1000 V/W = 14 V, over the 5 V limit
+ its[2].optics = {...its[2].optics, rangeMin:7, rangeMax:12};
+ const out = traceGaussian(route, its, id => assets.get(id));
+ assert.equal(out.power.signal, 0);
+ assert.ok(out.warnings.some(w => /outside its 7–12 µm/.test(w)));
+ // A 5 mm optic in a 6 mm beam clips a large share of the power.
+ its[1].optics = {...its[1].optics, aperture:5, coating:'ar'};
+ its[0].optics = {...its[0].optics, diameter:6};
+ const clipped = traceGaussian(route, its, id => assets.get(id));
+ close(clipped.points[1].clip, passRound(5, clipped.points[1].d), 1e-12);
+ assert.ok(clipped.points[1].clip < .9 && clipped.warnings.some(w => /aperture clips/.test(w)));
 });

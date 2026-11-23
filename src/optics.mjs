@@ -43,14 +43,14 @@ export const LENS_PRESETS = [
 export const OPTIC_TYPES = {
  none:'Not optical', laser:'Laser source', lens:'Lens', mirror:'Flat mirror', spherical:'Concave (spherical) mirror', parabolic:'Focusing (parabolic) mirror', detector:'Detector',
 };
-const LASER = {type:'laser', wavelength:4.5, spec:'waist', diameter:2.5, divergence:2.5, m2:1.3, waistOffset:0};
+const LASER = {type:'laser', wavelength:4.5, spec:'waist', diameter:2.5, divergence:2.5, m2:1.3, waistOffset:0, power:10};
 const DEFAULTS = {
  none:{type:'none'},
  laser:LASER,
- lens:{type:'lens', focal:100, material:'ZnSe', designWavelength:10.6, aperture:25.4},
- mirror:{type:'mirror', aperture:25.4},
- spherical:{type:'spherical', roc:200, aperture:25.4},
- parabolic:{type:'parabolic', focal:50.8, offAxis:90, aperture:25.4},
+ lens:{type:'lens', focal:100, material:'ZnSe', designWavelength:10.6, aperture:25.4, coating:'ar'},
+ mirror:{type:'mirror', aperture:25.4, coating:'gold'},
+ spherical:{type:'spherical', roc:200, aperture:25.4, coating:'gold'},
+ parabolic:{type:'parabolic', focal:50.8, offAxis:90, aperture:25.4, coating:'gold'},
  detector:{type:'detector', activeArea:1},
 };
 // What a part is, when the user has not said: by library id first, then by name.
@@ -81,7 +81,7 @@ export function validateOptics(o) {
  const out = {type:o.type};
  const take = (k, lo, hi) => { if (o[k] == null) return; if (!num(o[k], lo, hi)) bad(); out[k] = o[k]; };
  if (o.type === 'laser') {
-  take('wavelength', .2, 30); take('diameter', .001, 100); take('divergence', .001, 1500); take('m2', 1, 50); take('waistOffset', -10000, 10000);
+  take('wavelength', .2, 30); take('diameter', .001, 100); take('divergence', .001, 1500); take('m2', 1, 50); take('waistOffset', -10000, 10000); take('power', 1e-6, 1e6);
   if (o.spec != null) { if (!['waist', 'divergence'].includes(o.spec)) bad(); out.spec = o.spec; }
  }
  if (o.type === 'lens' || o.type === 'parabolic') {
@@ -92,11 +92,86 @@ export function validateOptics(o) {
  if (o.type === 'parabolic') take('offAxis', 0, 179);
  if (o.type === 'mirror') take('aperture', .1, 1000);
  if (o.type === 'spherical') { take('roc', -100000, 100000); if (out.roc != null && Math.abs(out.roc) < 1) bad(); take('aperture', .1, 1000); }
- if (o.type === 'detector') take('activeArea', .001, 100);
+ if (MIRRORS.has(o.type)) {
+  if (o.coating != null) { if (!(o.coating in COATINGS)) bad(); out.coating = o.coating; }
+  take('reflectance', 0, 100);
+ }
+ if (o.type === 'lens' && o.coating != null) { if (!(o.coating in LENS_COATINGS)) bad(); out.coating = o.coating; }
+ if (o.type === 'detector') {
+  take('activeArea', .001, 100); take('rangeMin', .2, 30); take('rangeMax', .2, 30); take('responsivity', 0, 1e12); take('maxOutput', 1e-6, 1e6);
+  if (out.rangeMin != null && out.rangeMax != null && out.rangeMin >= out.rangeMax) bad();
+ }
  return out;
 }
 
 // Laser source → embedded Gaussian: waist radius w0, Rayleigh range zR and half-angle divergence.
+// ---------- Power ----------
+// Typical reflectance of metal mirror coatings against wavelength (µm), read from vendor curves.
+export const COATINGS = {
+ gold:{name:'Gold', curve:[[.4, .38], [.5, .48], [.6, .88], [.7, .95], [1, .97], [2, .98], [30, .985]]},
+ silver:{name:'Protected silver', curve:[[.4, .9], [.5, .96], [1, .975], [2, .98], [10, .975], [30, .96]]},
+ aluminium:{name:'Protected aluminium', curve:[[.25, .88], [.4, .9], [.8, .86], [1, .92], [2, .95], [10, .96], [30, .95]]},
+ custom:{name:'Custom reflectance'},
+};
+export const LENS_COATINGS = {ar:'Anti-reflection coated', uncoated:'Uncoated'};
+const MIRRORS = new Set(['mirror', 'spherical', 'parabolic']);
+const AR_REFLECTANCE = .005; // per surface: a typical broadband AR coating inside its band
+const interpolate = (curve, x) => {
+ if (x <= curve[0][0]) return curve[0][1];
+ for (let k = 1; k < curve.length; k++) if (x <= curve[k][0]) { const [a, ya] = curve[k - 1], [b, yb] = curve[k]; return ya + (yb - ya) * (x - a) / (b - a); }
+ return curve.at(-1)[1];
+};
+export function mirrorReflectance(o, wavelength) {
+ if (o.coating === 'custom') return (o.reflectance ?? 99) / 100;
+ return interpolate(COATINGS[o.coating || 'gold'].curve, wavelength);
+}
+// One lens surface: Fresnel ((n-1)/(n+1))² when uncoated, a typical AR coating otherwise.
+export function surfaceReflectance(o, wavelength) {
+ if (o.material === 'ideal' || !MATERIALS[o.material]) return 0;
+ if (o.coating !== 'uncoated') return AR_REFLECTANCE;
+ const n = refractiveIndex(o.material, wavelength);
+ return ((n - 1) / (n + 1)) ** 2;
+}
+// Two surfaces with incoherent multiple reflections. Absorption in the glass is not modelled.
+export function lensTransmission(o, wavelength) { const R = surfaceReflectance(o, wavelength); return (1 - R) / (1 + R); }
+// Abramowitz & Stegun 7.1.26, |error| < 1.5e-7.
+export function erf(x) {
+ const t = 1 / (1 + .3275911 * Math.abs(x));
+ const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - .284496736) * t + .254829592) * t * Math.exp(-x * x);
+ return x < 0 ? -y : y;
+}
+// Share of a centred Gaussian beam (1/e² diameter d) passing a round aperture of diameter A,
+// and landing on a square of side a.
+export const passRound = (A, d) => 1 - Math.exp(-2 * A * A / (d * d));
+export const passSquare = (a, d) => erf(Math.SQRT2 * a / d) ** 2;
+export const pct = v => (v * 100 >= 10 ? (v * 100).toFixed(0) : (v * 100).toFixed(1)) + '%';
+export function fmtPower(mW) {
+ if (!Number.isFinite(mW)) return '–';
+ if (mW >= 1000) return +(mW / 1000).toPrecision(3) + ' W';
+ if (mW >= .1) return +mW.toPrecision(3) + ' mW';
+ if (mW >= 1e-4) return +(mW * 1000).toPrecision(3) + ' µW';
+ return +(mW * 1e6).toPrecision(3) + ' nW';
+}
+const mmText = v => v >= 10 ? v.toFixed(1) : v.toFixed(2);
+
+// What a detector at the end of the beam receives and, once its datasheet values are set, outputs.
+function detectorPower(info, o, P, lambda, warnings) {
+ const captured = passSquare(o.activeArea, info.d);
+ Object.assign(info, {captured, detectedPower:P * captured});
+ if (captured < .9) warnings.push(`${info.name}: only ${pct(captured)} of the beam lands on the ${o.activeArea} mm active area. Move the detector to the focus or add a focusing optic.`);
+ if (o.rangeMin != null && o.rangeMax != null && (lambda < o.rangeMin || lambda > o.rangeMax)) {
+  info.outOfRange = true;
+  warnings.push(`${info.name}: ${lambda} µm is outside its ${o.rangeMin}–${o.rangeMax} µm spectral range, so it will barely respond.`);
+ }
+ if (o.responsivity) {
+  info.signal = info.outOfRange ? 0 : info.detectedPower * 1e-3 * o.responsivity;
+  if (o.maxOutput != null && info.signal > o.maxOutput) {
+   info.saturated = true;
+   warnings.push(`${info.name}: ${fmtPower(info.detectedPower)} gives ${info.signal.toFixed(2)} V, above its ${o.maxOutput} V output limit, so it saturates. Attenuate to below ${fmtPower(o.maxOutput / o.responsivity * 1e3)}.`);
+  }
+ }
+}
+
 export function laserBeam(o) {
  const lambda = o.wavelength * 1e-3, m2 = o.m2;
  const w0 = o.spec === 'divergence' ? m2 * lambda / (Math.PI * (o.divergence * 1e-3 / 2)) : o.diameter / 2;
@@ -126,13 +201,14 @@ export function traceGaussian(route, items, assetOf) {
  let laserOptics = start.optics;
  if (laserOptics.type !== 'laser') { laserOptics = defaultOptics('laser'); warnings.push('The start point is not on a laser, so a default 4.5 µm source is assumed. Start the beam on a laser to use its settings.'); }
  const beam = laserBeam(laserOptics);
- let q = [-beam.waistOffset, beam.zR], s = 0;
+ let q = [-beam.waistOffset, beam.zR], s = 0, P = laserOptics.power ?? LASER.power;
+ const lambda = laserOptics.wavelength;
  const segments = [], points = [], waists = [];
- points.push({index:0, s:0, world:world[0], type:'laser', name:start.item?.name || 'Start', ...beamAtQ(q, beam)});
+ points.push({index:0, s:0, world:world[0], type:'laser', name:start.item?.name || 'Start', powerOut:P, ...beamAtQ(q, beam)});
  for (let k = 1; k < world.length; k++) {
   const length = len(sub(world[k], world[k - 1]));
   if (length < 1e-6) continue;
-  const seg = {index:k - 1, a:world[k - 1], b:world[k], s0:s, length, q0:q.slice()};
+  const seg = {index:k - 1, a:world[k - 1], b:world[k], s0:s, length, q0:q.slice(), power:P};
   segments.push(seg);
   const ahead = -q[0];
   if (ahead > 0 && ahead < length) {
@@ -158,13 +234,28 @@ export function traceGaussian(route, items, assetOf) {
    Object.assign(info, {f, focus:after.waistAhead, focusDiameter:after.waistDiameter, aperture:o.aperture});
   } else if (o.type === 'detector') info.activeArea = o.activeArea;
   else if (o.aperture) info.aperture = o.aperture;
+  // Power: clipped by the clear aperture, then reflected or transmitted; a detector keeps what lands on it.
+  info.powerIn = P;
+  if (here.item && o.type === 'detector') detectorPower(info, o, P, lambda, warnings);
+  else if (here.item && !last && (MIRRORS.has(o.type) || o.type === 'lens')) {
+   const clip = o.aperture ? passRound(o.aperture, info.d) : 1;
+   const eff = o.type === 'lens' ? lensTransmission(o, lambda) : mirrorReflectance(o, lambda);
+   Object.assign(info, {clip, efficiency:eff});
+   if (clip < .99) warnings.push(`${info.name}: its Ø ${mmText(o.aperture)} mm aperture clips ${pct(1 - clip)} of the Ø ${mmText(info.d)} mm beam. Use a larger optic or put it where the beam is narrower.`);
+   if (o.type === 'lens' && o.coating === 'uncoated' && eff < .9) warnings.push(`${info.name}: uncoated ${MATERIALS[o.material].name} reflects ${pct(surfaceReflectance(o, lambda))} at each surface, so only ${pct(eff)} gets through. An AR-coated lens avoids most of this loss.`);
+   P *= clip * eff;
+  }
+  info.powerOut = P;
   points.push(info);
  }
  for (const p of points) if (p.focus != null) {
   const next = points.find(n => n.index > p.index && n.f != null);
   p.focusReached = p.focus > 0 && (!next || p.s + p.focus < next.s);
  }
- return {ok:true, laser:{...laserOptics, ...beam}, warnings, segments, points, waists, total:s, end:points.at(-1)};
+ const end = points.at(-1);
+ const power = {start:laserOptics.power ?? LASER.power, end:end.powerIn ?? P, detected:end.detectedPower ?? null, signal:end.signal ?? null,
+  losses:points.filter(p => p.clip != null).map(p => ({name:p.name, clip:p.clip, efficiency:p.efficiency, lost:p.powerIn - p.powerOut}))};
+ return {ok:true, laser:{...laserOptics, ...beam}, warnings, segments, points, waists, total:s, end, power};
 }
 
 // Beam diameter and wavefront radius at path position s (mm from the laser).
