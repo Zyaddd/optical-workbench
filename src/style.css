@@ -653,3 +653,76 @@ canvas.tourTarget{outline-offset:-4px!important}
 @keyframes emptyIn{from{opacity:0;transform:translateY(10px)}}
 /* Small press feedback on every button */
 button:active:not(:disabled){transform:translateY(.5px) scale(.985)}
+
+/* Optics: Properties section, beam summary, hover readout, tour */
+.opticsSection{margin:0 0 14px;padding:12px;border:1px solid var(--line);border-left:3px solid var(--beam);border-radius:var(--r-md);background:color-mix(in srgb,var(--beam) 4%,var(--surface))}
+.opticsSection h3{margin:0 0 8px;font-size:13px}
+.opticsSection label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink-2);margin-bottom:8px}
+.opticsFields{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:0 10px}
+.opticsReadout p{margin:4px 0;font-size:12px;line-height:1.5;color:var(--ink-2)}
+.opticsReadout button{margin-top:6px}
+.opticsSummary{margin:6px 0 12px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-md);background:color-mix(in srgb,var(--beam) 4%,var(--surface));font-size:12px;line-height:1.5}
+.opticsLine{color:var(--ink-2);margin:2px 0}
+.opticsLine.strong{color:var(--ink);font-weight:600}
+.opticsPath{margin:6px 0;padding-left:18px;color:var(--ink-2)}
+.opticsPath li{margin:2px 0}
+.opticsPath b{color:var(--ink);font-weight:600}
+.opticsSummary button{margin:8px 0 4px}
+.opticsWarn{margin:6px 0;color:var(--warn);font-size:12px;line-height:1.5}
+.beamReadout{position:absolute;z-index:30;display:flex;flex-direction:column;gap:2px;padding:8px 11px;border-radius:var(--r-md);background:#13202b;color:#dfe8ee;border:1px solid color-mix(in srgb,var(--beam) 45%,transparent);font-size:12px;line-height:1.45;pointer-events:none;box-shadow:var(--shadow-pop);white-space:nowrap}
+.beamReadout strong{color:#fff;font-size:12.5px}
+.tourLaunch{width:100%;margin-top:6px}
+.opticsTour .tourDo{margin:-4px 0 12px;padding:8px 10px;border-radius:var(--r-md);background:color-mix(in srgb,var(--beam) 9%,var(--surface));color:var(--ink);font-weight:500}
+
+/* Simple / Scientific mode */
+.modeSwitch{display:inline-flex;padding:2px;border:1px solid var(--line);border-radius:999px;background:var(--surface);gap:2px}
+.modeSwitch button{min-height:26px;padding:2px 12px;border:0;border-radius:999px;background:transparent;color:var(--ink-2);font-size:12.5px;font-weight:500}
+.modeSwitch button:hover{color:var(--ink);background:color-mix(in srgb,var(--ink) 6%,transparent)}
+.modeSwitch button[aria-pressed=true]{background:var(--accent);color:var(--accent-ink);font-weight:600}
+.modeSwitch button[data-mode=scientific][aria-pressed=true]{background:var(--beam);color:#fff}
+body.mode-simple .opticsSection,body.mode-simple .physicsToggle,body.mode-simple #routeOpticsBox,body.mode-simple #opticsTourPanel,body.mode-simple .beamReadout{display:none!important}
+@media (max-width:760px){.modeSwitch button{padding:2px 8px;font-size:12px}}
+
+/* ---------- Diagram Image Output ---------- */
+.modeSwitch button[data-diagram]{position:relative;margin-left:4px}
+.modeSwitch button[data-diagram]::before{content:"";position:absolute;left:-4px;top:5px;bottom:5px;width:1px;background:var(--line)}
+.modeSwitch button[data-diagram][aria-pressed=true]{background:var(--ink);color:#fff;font-weight:600}
+body.diagram-open .modeSwitch button[data-mode][aria-pressed=true]{background:transparent;color:var(--ink-2);font-weight:500;box-shadow:inset 0 0 0 1px var(--line-strong)}
+.diagramView{position:fixed;left:0;right:0;bottom:0;top:var(--header-h);z-index:40;display:grid;grid-template-columns:minmax(0,1fr) 340px;background:var(--app)}
+.diagramView[hidden]{display:none}
+.diagramStage{position:relative;min-width:0;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;overflow:hidden;
+ background-color:#d9dee3;background-image:radial-gradient(circle at 1px 1px,rgba(22,33,43,.10) 1px,transparent 0);background-size:16px 16px}
+.diagramPaper{position:relative;flex:none;background:#fff;box-shadow:0 1px 2px rgba(16,30,44,.10),0 14px 40px rgba(16,30,44,.18)}
+.diagramPaper.isTransparent{background-color:#fff;background-image:linear-gradient(45deg,#e6e9ec 25%,transparent 25%,transparent 75%,#e6e9ec 75%),linear-gradient(45deg,#e6e9ec 25%,transparent 25%,transparent 75%,#e6e9ec 75%);background-size:16px 16px;background-position:0 0,8px 8px}
+.diagramPaper canvas,.diagramPaper svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+.diagramPaper svg{touch-action:none}
+.diagramPaper svg .calloutHandle{cursor:grab}
+.diagramPaper svg .calloutHandle:active{cursor:grabbing}
+.diagramPaper svg .isHot{stroke:var(--accent)}
+.diagramPaper svg circle.calloutHandle.isHot{fill:var(--accent-soft)}
+.diagramHint{margin:0;font-size:12px;color:var(--ink-2)}
+.diagramEmpty{max-width:340px;text-align:center;color:var(--ink-2)}
+.diagramSide{min-height:0;overflow:auto;background:var(--surface);border-left:1px solid var(--line);padding:16px 16px 28px;display:flex;flex-direction:column;gap:6px}
+.diagramHead{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:6px}
+.diagramHead h2{margin:0;font-family:var(--font-display);font-size:17px;font-weight:650;letter-spacing:-.01em}
+.diagramHead p{margin:3px 0 0;font-size:12.5px;color:var(--muted)}
+.diagramGroup{border-top:1px solid var(--line);padding:10px 0 4px}
+.diagramGroup summary{cursor:pointer;font-weight:600;font-size:13px;padding:2px 0 8px;color:var(--ink)}
+.diagramField{display:grid;grid-template-columns:96px minmax(0,1fr) auto;align-items:center;gap:8px;margin:0 0 8px;font-size:12.5px;color:var(--ink-2)}
+.diagramField select,.diagramField input{min-width:0;width:100%}
+.diagramField small{color:var(--muted)}
+.diagramGroup .inlineCheck{display:flex;align-items:center;gap:8px;margin:0 0 8px;font-size:12.5px}
+.diagramList{margin:8px 0 10px;border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}
+.diagramRow{display:grid;grid-template-columns:34px 30px minmax(0,1fr) 46px;align-items:center;gap:4px;padding:4px 6px;border-top:1px solid var(--line)}
+.diagramRow:first-child{border-top:0}
+.diagramRow:hover{background:var(--hover)}
+.diagramRow input[type=checkbox]{justify-self:center;margin:0}
+.diagramRow .dgLabel{min-height:28px;padding:3px 7px;font-size:12.5px}
+.diagramRowHead{background:var(--raised);font-size:11px;font-weight:600;color:var(--muted);padding-top:5px;padding-bottom:5px}
+.diagramRowHead span{text-align:center}.diagramRowHead span:nth-child(3){text-align:left;padding-left:2px}
+.diagramRowHead:hover{background:var(--raised)}
+.diagramNumber{justify-self:center;display:inline-grid;place-items:center;min-width:22px;height:22px;border:1.5px solid var(--ink);border-radius:999px;font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--ink)}
+.diagramMuted{margin:8px;color:var(--muted);font-size:12.5px}
+.diagramSize{margin:2px 0 10px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.diagramExport{display:flex;flex-wrap:wrap;gap:6px}
+@media (max-width:860px){.diagramView{grid-template-columns:1fr;grid-template-rows:minmax(240px,48%) 1fr}.diagramSide{border-left:0;border-top:1px solid var(--line)}}

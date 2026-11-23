@@ -2,6 +2,7 @@ import './build.mjs';
 import {cp, readFile, writeFile} from 'node:fs/promises';
 import {validateProject, DEFAULT_BOARD} from './src/core.mjs';
 import {cloudAccountPages} from './build-cloud.mjs';
+import {landingHtml} from './build-landing.mjs';
 const load = async name => JSON.parse(await readFile(new URL('./src/'+name+'.json',import.meta.url)));
 const [lasers, defaults] = await Promise.all([load('lasers'),load('default-components')]);
 const modelIds = ['supplied-nanoplus','default-flat-mirror','default-vigo-detector'];
@@ -13,7 +14,8 @@ const project = validateProject({format:'optical-workbench',version:2,name:'Lase
   points:[{x:28,y:26,z:0,itemId:'demo-0'},{x:17,y:26,z:1,itemId:'demo-1'},{x:-2.4,y:20,z:42.5,itemId:'demo-2'}]}],
 });
 await Promise.all([
- cp('web/index.html','dist/index.html'),
+ landingHtml().then(html=>writeFile('dist/index.html',html)),
+ cp('web/hero-scene.bin','dist/hero-scene.bin'),
  writeFile('dist/Example.optics.json',JSON.stringify(project)),
  cp('SOURCE_NOTICES.md','dist/SOURCE_NOTICES.md'),
  cp('THIRD_PARTY_LICENSES.txt','dist/THIRD_PARTY_LICENSES.txt'),
@@ -23,7 +25,7 @@ await Promise.all([
 // With SUPABASE_URL and SUPABASE_ANON_KEY set, also publish the account edition (see supabase/README.md).
 const cloud = cloudAccountPages({url:process.env.SUPABASE_URL,key:process.env.SUPABASE_ANON_KEY});
 if (cloud) {
- const [workbench, homepage] = await Promise.all([readFile('dist/Optical_Workbench.html','utf8'),readFile('web/index.html','utf8')]);
+ const [workbench, homepage] = await Promise.all([readFile('dist/Optical_Workbench.html','utf8'),landingHtml()]);
  await Promise.all([
   writeFile('dist/Account_Workbench.html',cloud.workbench(workbench)),
   writeFile('dist/index.html',cloud.homepage(homepage)),

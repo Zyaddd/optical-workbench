@@ -1,3 +1,4 @@
+import {accountHomepage} from './build-landing.mjs';
 // Turns the static workbench and landing page into the Supabase account edition.
 const escape = value => value.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
 
@@ -11,9 +12,7 @@ export function cloudAccountPages({url, key}) {
  const meta = `<meta name="workbench-accounts" content="cloud" data-supabase-url="${escape(parsed.origin)}" data-supabase-key="${escape(key)}">`;
  return {
   workbench: html => replaceOnce(html,'<head>',`<head>${meta}`),
-  homepage: html => replaceOnce(
-   replaceOnce(html,'<a class="primary" href="./Optical_Workbench.html">Launch workbench</a>','<a class="primary" href="./Account_Workbench.html">Launch workbench</a>\n<a href="./Optical_Workbench.html">Use without an account</a>'),
-   '</nav>','</nav>\n<p>Create a free account in the workbench with a username and password. Your saved projects then open from any computer under <strong>My projects</strong>.</p>'),
+  homepage: html => accountHomepage(html),
  };
 }
 

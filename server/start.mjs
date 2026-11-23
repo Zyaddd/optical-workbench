@@ -20,6 +20,7 @@ const files = new Map([
  ['/Account_Workbench.html', ['Account_Workbench.html','text/html; charset=utf-8']],
  ['/Optical_Workbench.html', ['Optical_Workbench.html','text/html; charset=utf-8']],
  ['/Example.optics.json', ['Example.optics.json','application/json']],
+ ['/hero-scene.bin', ['hero-scene.bin','application/octet-stream']],
  ...['SOURCE_NOTICES.md','THIRD_PARTY_LICENSES.txt','license.occt.txt','license.occt-import-js.txt'].map(name=>['/'+name,[name,'text/plain; charset=utf-8']]),
 ]);
 const server = createServer(async (incoming,outgoing)=>{

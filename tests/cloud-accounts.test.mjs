@@ -63,7 +63,10 @@ test('cloud build adds the account meta tag only with a valid public key', () =>
  assert.throws(()=>cloudAccountPages({url:'https://demo.supabase.co',key:serviceJwt}),/never the service_role/);
  const pages = cloudAccountPages({url:'https://demo.supabase.co/',key:'sb_publishable_abcdefghijklmnop'});
  assert.equal(pages.workbench('<html><head><title>x</title>'),'<html><head><meta name="workbench-accounts" content="cloud" data-supabase-url="https://demo.supabase.co" data-supabase-key="sb_publishable_abcdefghijklmnop"><title>x</title>');
- const home = pages.homepage('<nav><a class="primary" href="./Optical_Workbench.html">Launch workbench</a></nav>');
- assert.match(home,/href="\.\/Account_Workbench\.html">Launch workbench/);
- assert.match(home,/Use without an account/);
+ const home = pages.homepage('<a class="btn primary" data-launch href="./Optical_Workbench.html">Launch workbench</a><a data-guest hidden href="./Optical_Workbench.html">Use without an account</a><p data-accounts hidden>Accounts</p><a data-no-accounts href="#how">See how</a><a class="btn" data-launch href="./Optical_Workbench.html">Launch</a>');
+ assert.equal(home.split('data-launch href="./Account_Workbench.html"').length - 1, 2);
+ assert.match(home,/data-guest href="\.\/Optical_Workbench\.html">Use without an account/);
+ assert.match(home,/data-accounts>Accounts/);
+ assert.match(home,/data-no-accounts hidden href="#how"/);
+ assert.throws(()=>pages.homepage('<a href="./Optical_Workbench.html">Launch</a>'),/account hooks/);
 });

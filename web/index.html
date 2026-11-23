@@ -1,24 +1,313 @@
 <!doctype html>
 <html lang="en">
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Plan optical breadboard layouts, position components, and draw beam paths in your browser.">
+<meta name="description" content="Optical Workbench is a 3D planner for laser spectroscopy setups: lay out breadboards with real lasers, mirrors and detectors, trace the beam, and export the parts list in your browser.">
+<meta name="color-scheme" content="light">
 <title>Optical Workbench</title>
 <style>
-:root{color-scheme:dark;font-family:Segoe UI,system-ui,sans-serif;background:#101a25;color:#eef6fa}
-body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;box-sizing:border-box}
-main{width:min(100%,660px);padding:40px;box-sizing:border-box;border-radius:24px;background:#172636;border:1px solid #304459}
-h1{font-size:clamp(2rem,7vw,3.5rem);margin:0 0 .4em;letter-spacing:-.04em}p{color:#bbcfda;line-height:1.55}
-nav{display:flex;flex-wrap:wrap;gap:10px;margin:28px 0}a{padding:10px 14px;border-radius:10px;color:#e5f8f5;border:1px solid #52717f;text-decoration:none}a.primary{background:#74dfca;color:#102823;border-color:#74dfca;font-weight:600}a:focus-visible{outline:3px solid #a4fff1;outline-offset:4px}
+:root{
+ --ink:#16212b;--ink-2:#384653;--muted:#5d6b78;--line:#d9dfe5;--steel:#eef1f3;--steel-2:#e3e8ec;--paper:#ffffff;
+ --accent:#0d6b6e;--accent-hover:#0a5a5d;--accent-soft:#e2f1f0;--beam:#e2483d;
+ --night:#0b1015;--night-ink:#e9eff4;--night-muted:#9fb0bf;--glass:rgba(16,23,30,.72);--glass-line:rgba(255,255,255,.09);
+ --font:'Segoe UI Variable Text','Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif;
+ --display:'Segoe UI Variable Display','Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif;
+ --ease:cubic-bezier(.2,.8,.2,1);
+}
+*,*::before,*::after{box-sizing:border-box}
+[hidden]{display:none!important}
+html{scroll-behavior:smooth}
+body{margin:0;font:16px/1.6 var(--font);color:var(--ink);background:var(--steel);-webkit-font-smoothing:antialiased}
+a{color:inherit}
+img,svg{display:block}
+.wrap{width:min(1180px,100% - 40px);margin-inline:auto}
+.btn{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:0 20px;border-radius:999px;border:1px solid transparent;font:600 15px/1 var(--font);text-decoration:none;cursor:pointer;transition:background-color .15s,border-color .15s,transform .15s}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:var(--accent);color:#fff}
+.btn.primary:hover{background:var(--accent-hover)}
+.btn.ghost{border-color:rgba(255,255,255,.22);color:var(--night-ink);background:rgba(255,255,255,.04)}
+.btn.ghost:hover{background:rgba(255,255,255,.1)}
+.btn.line{border-color:var(--line);color:var(--ink);background:var(--paper)}
+.btn.line:hover{border-color:#b9c3cc}
+:focus-visible{outline:3px solid #4fc1b6;outline-offset:3px;border-radius:6px}
+
+/* Top bar floats over the dark bench, then settles on steel */
+.top{position:fixed;inset:0 0 auto;z-index:50;transition:background-color .3s,border-color .3s,color .3s;border-bottom:1px solid transparent;color:var(--night-ink)}
+.top .wrap{display:flex;align-items:center;gap:28px;height:64px}
+.brand{display:flex;align-items:center;gap:10px;font:650 16px/1 var(--display);letter-spacing:-.01em;text-decoration:none}
+.brand svg{width:30px;height:30px;border-radius:8px;background:#13202b}
+.links{display:flex;gap:22px;margin-left:auto;font-size:14px}
+.links a{text-decoration:none;opacity:.82}
+.links a:hover{opacity:1}
+.top .btn{min-height:38px;padding:0 16px;font-size:14px;gap:0}
+.top.solid{background:rgba(238,241,243,.86);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-color:var(--line);color:var(--ink)}
+.markSource{fill:#f3f6f8}.markBeam{fill:none;stroke:#ff4d40;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}.markMirror{stroke:#7fe0d3;stroke-width:3;stroke-linecap:round}
+
+/* ---------- Bench tour: a live 3D bench with steps scrolling past ---------- */
+.tour{position:relative;background:var(--night);color:var(--night-ink)}
+.stage{position:sticky;top:0;height:100vh;height:100svh;overflow:hidden}
+.stage canvas{width:100%;height:100%;display:block}
+.stage::after{content:'';position:absolute;inset:auto 0 0;height:22vh;background:linear-gradient(transparent,rgba(11,16,21,.55));pointer-events:none}
+.stage.noGL{background:radial-gradient(ellipse at 60% 40%,#25303b,#0b1015 70%)}
+.labels{position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity .5s}
+.labels.show{opacity:1}
+.partLabel{position:absolute;left:0;top:0;padding:4px 10px;border-radius:999px;background:var(--glass);border:1px solid var(--glass-line);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);font-size:12.5px;font-weight:600;white-space:nowrap;color:var(--night-ink)}
+.partLabel::after{content:'';position:absolute;left:50%;top:100%;width:1px;height:12px;background:rgba(233,239,244,.45)}
+.steps{position:relative;margin-top:-100vh;margin-top:-100svh;z-index:2;pointer-events:none}
+.step{min-height:100vh;min-height:100svh;display:flex;align-items:center}
+.step .wrap{display:flex}
+.card{pointer-events:auto;width:min(440px,100%);padding:28px 30px;border-radius:22px;background:var(--glass);border:1px solid var(--glass-line);backdrop-filter:blur(18px) saturate(1.3);-webkit-backdrop-filter:blur(18px) saturate(1.3);box-shadow:0 24px 60px rgba(0,0,0,.35);opacity:.35;transform:translateY(16px);transition:opacity .6s var(--ease),transform .6s var(--ease)}
+.step.active .card{opacity:1;transform:none}
+.card .count{display:block;margin-bottom:10px;font-size:13px;font-weight:600;color:#7fe0d3;font-variant-numeric:tabular-nums}
+.card h2{margin:0 0 10px;font:650 clamp(26px,3vw,34px)/1.12 var(--display);letter-spacing:-.022em}
+.card p{margin:0;color:var(--night-muted)}
+.card ul{margin:16px 0 0;padding:0;list-style:none;display:grid;gap:8px;font-size:14.5px;color:#c7d3dd}
+.card li{display:flex;gap:10px}
+.card li::before{content:'';flex:none;width:6px;height:6px;margin-top:9px;border-radius:50%;background:#7fe0d3}
+.hero .card{width:min(560px,100%);padding:36px 38px}
+.hero h1{margin:0 0 14px;font:650 clamp(34px,4.1vw,52px)/1.06 var(--display);letter-spacing:-.03em;text-wrap:balance}
+.hero h1 span{display:block;color:#ff7a70}
+.hero .lead{font-size:17.5px;line-height:1.6}
+.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:26px}
+.scrollCue{display:flex;align-items:center;gap:10px;margin-top:22px;font-size:13px;color:var(--night-muted)}
+.scrollCue i{width:22px;height:34px;border:1.5px solid rgba(233,239,244,.4);border-radius:12px;position:relative}
+.scrollCue i::after{content:'';position:absolute;left:50%;top:7px;width:3px;height:7px;margin-left:-1.5px;border-radius:2px;background:var(--night-ink);animation:cue 1.8s var(--ease) infinite}
+@keyframes cue{60%{transform:translateY(9px);opacity:0}100%{opacity:0}}
+.step.right .wrap{justify-content:flex-end}
+.stepNav{position:fixed;right:22px;top:50%;transform:translateY(-50%);z-index:20;display:grid;gap:10px;transition:opacity .3s}
+.stepNav a{width:9px;height:9px;border-radius:50%;background:rgba(233,239,244,.28);transition:background-color .3s,transform .3s}
+.stepNav a.on{background:#7fe0d3;transform:scale(1.35)}
+.stepNav.away{opacity:0;pointer-events:none}
+
+/* ---------- Sections on steel ---------- */
+section.light{padding:110px 0}
+.sectionHead{max-width:640px;margin-bottom:46px}
+.sectionHead h2{margin:0 0 12px;font:650 clamp(30px,3.6vw,44px)/1.08 var(--display);letter-spacing:-.025em}
+.sectionHead p{margin:0;font-size:17.5px;color:var(--muted)}
+.bento{display:grid;grid-template-columns:repeat(6,1fr);gap:16px}
+.tile{position:relative;padding:26px;border-radius:20px;background:var(--paper);border:1px solid var(--line);overflow:hidden}
+.tile h3{margin:0 0 8px;font:650 19px/1.25 var(--display);letter-spacing:-.01em}
+.tile p{margin:0;color:var(--muted);font-size:15px}
+.tile ul{margin:14px 0 0;padding:0;list-style:none;display:grid;gap:7px;font-size:14.5px;color:var(--ink-2)}
+.tile li{padding-left:16px;position:relative}
+.tile li::before{content:'';position:absolute;left:0;top:10px;width:7px;height:1.5px;background:var(--accent)}
+.span3{grid-column:span 3}.span2{grid-column:span 2}.span4{grid-column:span 4}
+.tile.dark{background:#111820;border-color:#111820;color:var(--night-ink)}
+.tile.dark p{color:var(--night-muted)}
+.tile.dark li{color:#c7d3dd}
+.tile.dark li::before{background:#ff6a5f}
+.figure{margin:-6px -6px 18px;height:150px;border-radius:14px;background:var(--steel);display:grid;place-items:center;overflow:hidden}
+.tile.dark .figure{background:#0b1015}
+.figure svg{width:100%;height:100%}
+.parts{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.parts span{padding:5px 11px;border-radius:999px;background:var(--steel);border:1px solid var(--line);font-size:13px;font-weight:550;color:var(--ink-2)}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.panel{padding:34px;border-radius:22px;background:var(--paper);border:1px solid var(--line)}
+.panel h3{margin:0 0 10px;font:650 24px/1.2 var(--display);letter-spacing:-.015em}
+.panel p{margin:0 0 18px;color:var(--muted)}
+.panel .btn{margin-top:4px}
+.keys{display:grid;grid-template-columns:max-content 1fr;gap:10px 18px;margin:18px 0 0;font-size:14.5px;color:var(--ink-2)}
+kbd{display:inline-block;min-width:24px;padding:2px 7px;border:1px solid var(--line);border-bottom-width:2px;border-radius:6px;background:var(--steel);font:600 12.5px/1.4 var(--font);text-align:center;color:var(--ink)}
+.closing{padding:120px 0;text-align:center;background:var(--night);color:var(--night-ink);position:relative;overflow:hidden}
+.closing::before{content:'';position:absolute;left:-10%;right:-10%;top:50%;height:2px;background:linear-gradient(90deg,transparent,#ff4d40 20%,#ff4d40 80%,transparent);box-shadow:0 0 18px 2px rgba(255,77,64,.55);opacity:.55}
+.closing .inner{position:relative;max-width:620px;margin:0 auto;padding:44px 32px;border-radius:24px;background:rgba(11,16,21,.86);border:1px solid var(--glass-line)}
+.closing h2{margin:0 0 12px;font:650 clamp(30px,4vw,46px)/1.08 var(--display);letter-spacing:-.025em}
+.closing p{margin:0 auto;color:var(--night-muted);max-width:480px}
+.closing .actions{justify-content:center}
+footer{padding:34px 0 46px;color:var(--muted);font-size:13.5px}
+footer .wrap{display:flex;flex-wrap:wrap;gap:12px 26px;align-items:center}
+footer a{text-decoration:none}
+footer a:hover{text-decoration:underline}
+footer .grow{flex:1}
+
+@media (max-width:900px){
+ .links{display:none}
+ .bento{grid-template-columns:1fr 1fr}
+ .span3,.span2,.span4{grid-column:span 2}
+ .split{grid-template-columns:1fr}
+ .stepNav{display:none}
+}
+@media (max-width:640px){
+ .top .wrap{height:56px}
+ .step{align-items:flex-end;padding-bottom:28px}
+ .step.right .wrap{justify-content:flex-start}
+ .card,.hero .card{padding:22px 22px 24px;border-radius:18px}
+ .hero h1{font-size:34px}
+ .hero .lead{font-size:16px}
+ section.light{padding:76px 0}
+ .bento{grid-template-columns:1fr}
+ .span3,.span2,.span4{grid-column:auto}
+ .top .btn span{display:none}
+}
+@media (prefers-reduced-motion:reduce){
+ html{scroll-behavior:auto}
+ *,*::before,*::after{animation:none!important;transition:none!important}
+ .card{opacity:1;transform:none}
+}
 </style>
-<main>
-<h1>Optical Workbench</h1>
-<p>Plan a 3D optical breadboard layout. Import STEP models, mount and rotate components, draw beam paths, and export your parts list.</p>
-<nav aria-label="Get started">
-<a class="primary" href="./Optical_Workbench.html">Launch workbench</a>
-<a href="./Example.optics.json" download>Download example</a>
-<a href="./Optical_Workbench.html" download>Download offline app</a>
-</nav>
-<p>To try the example, launch the workbench and choose <strong>Project → Open</strong>. Select the downloaded example file.</p>
+</head>
+<body>
+<header class="top" data-top>
+ <div class="wrap">
+  <a class="brand" href="#top"><svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="6" cy="19" r="2.4" class="markSource"/><path d="M8.5 19h10V6.5" class="markBeam"/><path d="M14 23.5 23 14.5" class="markMirror"/></svg>Optical Workbench</a>
+  <nav class="links" aria-label="Page sections"><a href="#how">How it works</a><a href="#features">Features</a><a href="#projects">Your projects</a></nav>
+  <a class="btn primary" data-launch href="./Optical_Workbench.html">Launch<span>&nbsp;workbench</span></a>
+ </div>
+</header>
+
+<main id="top">
+ <section class="tour" aria-label="How Optical Workbench works">
+  <div class="stage" data-stage>
+   <div data-canvas style="position:absolute;inset:0"></div>
+   <div class="labels" data-labels aria-hidden="true"></div>
+  </div>
+  <nav class="stepNav" data-stepnav aria-label="Tour steps"><a href="#tour-0" aria-label="Introduction"></a><a href="#tour-1" aria-label="Step 1"></a><a href="#tour-2" aria-label="Step 2"></a><a href="#tour-3" aria-label="Step 3"></a><a href="#tour-4" aria-label="Step 4"></a></nav>
+  <div class="steps">
+   <div class="step hero active" data-step id="tour-0">
+    <div class="wrap"><div class="card">
+     <h1>Plan the beam path <span>before you touch the bench.</span></h1>
+     <p class="lead">Optical Workbench is a 3D planner for laser spectroscopy setups. Lay out a breadboard with real lasers, mirrors and detectors, trace the beam through every bounce, and export the parts list, all in your browser.</p>
+     <div class="actions">
+      <a class="btn primary" data-launch href="./Optical_Workbench.html">Launch workbench</a>
+      <a class="btn ghost" data-guest hidden href="./Optical_Workbench.html">Use without an account</a>
+      <a class="btn ghost" data-no-accounts href="#how">See how it works</a>
+     </div>
+     <div class="scrollCue" aria-hidden="true"><i></i>Scroll to watch a setup come together</div>
+    </div></div>
+   </div>
+   <div class="step right" data-step id="tour-1">
+    <div class="wrap" id="how"><div class="card">
+     <span class="count">Step 1 of 4</span>
+     <h2>Choose a breadboard</h2>
+     <p>Start from a Thorlabs MB1218, a metric 600 × 450 mm board, a model you import, or your own dimensions. Add a second board beside the first when the setup outgrows it.</p>
+     <ul><li>25 mm and 1 inch hole grids</li><li>Custom size, thickness, pitch and margins</li><li>Snap parts to the holes as you place them</li></ul>
+    </div></div>
+   </div>
+   <div class="step" data-step id="tour-2">
+    <div class="wrap"><div class="card">
+     <span class="count">Step 2 of 4</span>
+     <h2>Place real parts</h2>
+     <p>Pick lasers, mirror mounts, detectors and post holders from the library, then click a hole to drop them in. Move, rotate about the mounting point, set heights and stack parts in holders.</p>
+     <ul><li>Supplied QCL and NanoPlus lasers, flat and parabolic mirrors, a VIGO detector</li><li>Import your own STEP models, converted on your computer</li><li>Group parts and save them as reusable assemblies</li></ul>
+    </div></div>
+   </div>
+   <div class="step right" data-step id="tour-3">
+    <div class="wrap"><div class="card">
+     <span class="count">Step 3 of 4</span>
+     <h2>Trace the beam</h2>
+     <p>Click the laser, each optic it bounces off, and the detector. The beam follows its components when you move them, so you can try a new arrangement without redrawing it.</p>
+     <ul><li>Several beams per setup, each with its own colour</li><li>Beam diameter, opacity and expansion along the path</li><li>Warnings when a bounce no longer lines up</li></ul>
+    </div></div>
+   </div>
+   <div class="step" data-step id="tour-4">
+    <div class="wrap"><div class="card">
+     <span class="count">Step 4 of 4</span>
+     <h2>Check the layout and export</h2>
+     <p>Look down from above, measure between optical centres, and compare heights against a reference plane. When it looks right, export a build sheet and an Excel parts list for ordering.</p>
+     <ul><li>Top, front, side and 3D views</li><li>Two-point and optical-centre measurements</li><li>Parts list with Thorlabs part numbers</li></ul>
+    </div></div>
+   </div>
+  </div>
+ </section>
+
+ <section class="light" id="features">
+  <div class="wrap">
+   <div class="sectionHead">
+    <h2>Everything a bench layout needs</h2>
+    <p>The tools you reach for when planning an optical setup, built around real hardware and real hole grids.</p>
+   </div>
+   <div class="bento">
+    <article class="tile dark span4">
+     <div class="figure"><svg viewBox="0 0 520 150" aria-hidden="true"><g fill="#1b232c">
+      <rect x="40" y="60" width="54" height="34" rx="4" fill="#b89648"/><rect x="200" y="44" width="10" height="34" rx="2" fill="#5c656e" transform="rotate(-45 205 61)"/><rect x="200" y="96" width="10" height="34" rx="2" fill="#5c656e" transform="rotate(45 205 113)"/><rect x="420" y="96" width="60" height="36" rx="4" fill="#24364f"/></g>
+      <path d="M94 77H205V113H420" fill="none" stroke="#ff3b30" stroke-width="3" stroke-linejoin="round"/><path d="M94 77H205V113H420" fill="none" stroke="#ff3b30" stroke-width="12" stroke-opacity=".15" stroke-linejoin="round"/>
+      <circle cx="205" cy="77" r="9" fill="#ff3b30" fill-opacity=".35"/><circle cx="205" cy="113" r="9" fill="#ff3b30" fill-opacity=".35"/></svg></div>
+     <h3>Beams that behave like beams</h3>
+     <p>Draw a beam from the laser through each optic to the detector. Points stay attached to their parts, so the path updates as you rearrange the bench.</p>
+     <ul><li>Several beams per setup, named and coloured</li><li>Diameter, opacity and divergence along the path</li><li>Advanced ray preview for quick geometric checks</li></ul>
+    </article>
+    <article class="tile span2">
+     <div class="figure"><svg viewBox="0 0 220 150" aria-hidden="true"><rect x="20" y="20" width="180" height="110" rx="6" fill="#23282e"/><g fill="#6b747d">
+      <circle cx="40" cy="40" r="3"/><circle cx="70" cy="40" r="3"/><circle cx="100" cy="40" r="3"/><circle cx="130" cy="40" r="3"/><circle cx="160" cy="40" r="3"/><circle cx="40" cy="70" r="3"/><circle cx="70" cy="70" r="3"/><circle cx="130" cy="70" r="3"/><circle cx="160" cy="70" r="3"/><circle cx="40" cy="100" r="3"/><circle cx="70" cy="100" r="3"/><circle cx="100" cy="100" r="3"/><circle cx="130" cy="100" r="3"/><circle cx="160" cy="100" r="3"/></g>
+      <circle cx="100" cy="70" r="11" fill="none" stroke="#7fe0d3" stroke-width="2.5"/><circle cx="100" cy="70" r="3.5" fill="#7fe0d3"/></svg></div>
+     <h3>Snaps to the hole grid</h3>
+     <p>Parts land on real 25 mm or 1 inch holes, with exact positions from the board centre.</p>
+    </article>
+    <article class="tile span2">
+     <h3>Real hardware library</h3>
+     <p>Start with packaged models of the parts on our bench.</p>
+     <div class="parts"><span>Alpes HHL QCL</span><span>NanoPlus laser</span><span>Flat mirror mount</span><span>Parabolic mirror</span><span>VIGO LabM-I-4</span><span>Post holder</span><span>MB1218 board</span></div>
+    </article>
+    <article class="tile span2">
+     <h3>Import your own STEP</h3>
+     <p>Bring in any STEP model. It's converted on your computer and never uploaded. Set its mounting anchors and optical centre once, then reuse it.</p>
+    </article>
+    <article class="tile span2">
+     <h3>Mount, stack and group</h3>
+     <p>Put parts in adjustable post holders, set heights above the board, rotate about the mounting point, and save groups as assemblies.</p>
+    </article>
+    <article class="tile span3">
+     <h3>Measure and check</h3>
+     <p>Measure between any two points or between optical centres, show optical-centre markers, and compare heights against a beam-height reference plane.</p>
+    </article>
+    <article class="tile span3">
+     <h3>Export for the lab</h3>
+     <p>Generate a build sheet and an Excel parts list with part numbers, and save the whole layout as an <code>.optics.json</code> file to share or keep.</p>
+    </article>
+   </div>
+  </div>
+ </section>
+
+ <section class="light" id="projects" style="padding-top:0">
+  <div class="wrap">
+   <div class="sectionHead">
+    <h2>Your projects, wherever you work</h2>
+    <p>Keep layouts in an account, carry them as files, or run the whole workbench without a connection.</p>
+   </div>
+   <div class="split">
+    <div class="panel">
+     <h3>Save to your account</h3>
+     <p data-accounts hidden>Create an account with just a username and password. Your saved layouts appear under <strong>My projects</strong> on any computer you sign in from.</p>
+     <p data-no-accounts>Download any layout as a project file and open it again with <strong>Project → Open</strong>. Accounts are available on the hosted edition.</p>
+     <a class="btn primary" data-launch href="./Optical_Workbench.html">Launch workbench</a>
+    </div>
+    <div class="panel">
+     <h3>Take it offline</h3>
+     <p>The offline app is a single file with everything inside: the 3D engine, the parts library and STEP conversion. Open it from your computer, no internet needed.</p>
+     <a class="btn line" href="./Optical_Workbench.html" download>Download offline app</a>
+     <dl class="keys"><dt><kbd>V</kbd> <kbd>R</kbd></dt><dd>Move and rotate</dd><dt><kbd>Ctrl</kbd> <kbd>D</kbd></dt><dd>Duplicate the selection</dd><dt><kbd>Ctrl</kbd> <kbd>Z</kbd></dt><dd>Undo, with <kbd>Ctrl</kbd> <kbd>Y</kbd> to redo</dd></dl>
+    </div>
+   </div>
+  </div>
+ </section>
+
+ <section class="closing">
+  <div class="wrap"><div class="inner">
+   <h2>Your next setup starts on a clear board</h2>
+   <p>Open the workbench, choose a breadboard and place your first part. Or download the example layout and open it with <strong>Project → Open</strong>.</p>
+   <div class="actions">
+    <a class="btn primary" data-launch href="./Optical_Workbench.html">Launch workbench</a>
+    <a class="btn ghost" href="./Example.optics.json" download>Download example</a>
+   </div>
+  </div></div>
+ </section>
 </main>
+
+<footer>
+ <div class="wrap">
+  <span class="grow">Optical Workbench v0.6.6 beta</span>
+  <a href="./SOURCE_NOTICES.md">Source notices</a>
+  <a href="./THIRD_PARTY_LICENSES.txt">Third-party licenses</a>
+ </div>
+</footer>
+<script>
+// Top bar turns solid once the bench scrolls away; step dots follow the tour.
+(()=>{const top=document.querySelector('[data-top]'),tour=document.querySelector('.tour'),nav=document.querySelector('[data-stepnav]'),dots=[...nav.children],steps=[...document.querySelectorAll('[data-step]')];
+const onScroll=()=>{const end=tour.getBoundingClientRect().bottom;top.classList.toggle('solid',end<64);nav.classList.toggle('away',end<innerHeight*.6)};
+addEventListener('scroll',onScroll,{passive:true});onScroll();
+const io=new IntersectionObserver(es=>{for(const e of es)if(e.isIntersecting){const i=steps.indexOf(e.target);dots.forEach((d,k)=>d.classList.toggle('on',k===i))}},{rootMargin:'-45% 0px -45% 0px'});steps.forEach(s=>io.observe(s));})();
+</script>
+<script>__LANDING_JS__</script>
+</body>
 </html>
