@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {refractiveIndex, effectiveFocal, laserBeam, traceGaussian, beamAt, focusOnEndpoint, validateOptics, itemOptics, defaultType, envelopeSamples, LENS_PRESETS, passRound, passSquare, erf, lensTransmission, surfaceReflectance, mirrorReflectance, fmtPower} from '../src/optics.mjs';
+import fs from 'node:fs';
+import {refractiveIndex, effectiveFocal, laserBeam, traceGaussian, beamAt, focusOnEndpoint, validateOptics, itemOptics, defaultType, envelopeSamples, LENS_PRESETS, passRound, passSquare, erf, lensTransmission, surfaceReflectance, mirrorReflectance, fmtPower, filterTransmission, windowTransmission, gasAbsorption, gasCellOptics, couplingEfficiency, cellPasses, cellBounces} from '../src/optics.mjs';
+import {cellMeshes} from '../src/cell.mjs';
 import {validateProject, DEFAULT_BOARD} from '../src/core.mjs';
 import {validateRoutes} from '../src/routes.mjs';
 
@@ -186,4 +188,119 @@ test('power follows the beam: lens loss, aperture clipping, detector capture, si
  const clipped = traceGaussian(route, its, id => assets.get(id));
  close(clipped.points[1].clip, passRound(5, clipped.points[1].d), 1e-12);
  assert.ok(clipped.points[1].clip < .9 && clipped.warnings.some(w => /aperture clips/.test(w)));
+});
+
+test('windows, filters, gas cells and fibres follow their closed forms', () => {
+ assert.equal(windowTransmission({material:'ZnSe', coating:'uncoated', brewster:true}, 4.5), 1);
+ close(windowTransmission({material:'ZnSe', coating:'uncoated'}, 4.5), lensTransmission({material:'ZnSe', coating:'uncoated'}, 4.5), 1e-12);
+ close(filterTransmission({kind:'nd', od:2}, 4.5), .01, 1e-12);
+ close(filterTransmission({kind:'bandpass', center:4.5, fwhm:.2, peak:80}, 4.5), .8, 1e-12);
+ close(filterTransmission({kind:'bandpass', center:4.5, fwhm:.2, peak:80}, 4.6), .4, 1e-9);   // half at the band edge
+ assert.ok(filterTransmission({kind:'bandpass', center:4.5, fwhm:.2, peak:80}, 4.8) < 1e-6);
+ const g = gasAbsorption({ppm:100, sigma:1e-19, pressure:1013, temperature:296, length:100, passes:1});
+ close(g.n, 1e-4 * 101300 / (1.380649e-23 * 296) * 1e-6, 1e6);
+ close(g.tau, 1e-19 * g.n * 10, 1e-12);
+ close(gasAbsorption({ppm:100, sigma:1e-19, pressure:1013, temperature:296, length:200, passes:30}).path, 6000, 1e-9);
+ const cell = gasCellOptics({window:'CaF2', coating:'ar', mirrorCoating:'gold', passes:30}, 4.5);
+ assert.equal(cell.reflections, 29);
+ close(cell.mirrors, mirrorReflectance({coating:'gold'}, 4.5) ** 29, 1e-12);
+ close(couplingEfficiency({kind:'fibre', mfd:20}, .02, Infinity, .0045), 1, 1e-12);       // matched, flat waist
+ close(couplingEfficiency({kind:'fibre', mfd:20}, .04, Infinity, .0045), .64, 1e-12);     // twice the mode: 4/(2+½)²
+ assert.ok(couplingEfficiency({kind:'fibre', mfd:20}, .02, 50, .0045) < 1);                // curved wavefront loses
+ close(couplingEfficiency({kind:'pinhole', pinhole:2000}, 2, Infinity, .0045), 1 - Math.exp(-2), 1e-12);
+ assert.throws(() => validateOptics({type:'filter', kind:'magic'}));
+ assert.throws(() => validateOptics({type:'gascell', passes:2.5}));
+});
+
+test('a beam that starts on a beam splitter carries on from the beam through it', () => {
+ const its = [
+  {id:'L', assetId:'laser', x:0, y:0, z:0, angle:0, optics:{type:'laser', wavelength:4.5, spec:'waist', diameter:2.5, m2:1, waistOffset:0, power:10}},
+  {id:'S', assetId:'none', x:100, y:0, z:0, angle:0, optics:{type:'splitter', reflectance:30, aperture:25.4}},
+  {id:'D', assetId:'det', x:300, y:0, z:0, angle:0},
+  {id:'E', assetId:'det', x:100, y:0, z:200, angle:0},
+ ];
+ const pt = id => ({x:0, y:0, z:0, itemId:id});
+ const main = {id:'a', name:'Main', points:[pt('L'), pt('S'), pt('D')]}, side = {id:'b', name:'Side', points:[pt('S'), pt('E')]};
+ const all = [main, side], A = traceGaussian(main, its, id => assets.get(id), all), B = traceGaussian(side, its, id => assets.get(id), all);
+ assert.equal(A.points[1].arm, 'transmitted');
+ close(A.points[1].powerOut, 10 * .7, 1e-9);
+ assert.equal(B.points[0].arm, 'reflected');
+ close(B.power.start, 10 * .3, 1e-9);
+ close(B.points[0].s, 100, 1e-9);                      // distances continue from the laser
+ close(B.points[1].d, beamAt(A, 300).d, 1e-6);          // same 300 mm of free path as the main arm
+ assert.ok(B.warnings.some(w => /Carries on from Main/.test(w)));
+});
+
+test('a gas cell takes its absorption from the detector power: the absorption signal', () => {
+ const its = [
+  {id:'L', assetId:'laser', x:0, y:0, z:0, angle:0, optics:{type:'laser', wavelength:4.5, spec:'waist', diameter:2.5, m2:1, waistOffset:0, power:10}},
+  {id:'C', assetId:'none', x:100, y:0, z:0, angle:0, optics:{type:'gascell', length:100, passes:10, mirrorCoating:'gold', window:'CaF2', coating:'ar', aperture:20, ppm:1000, sigma:1e-19, pressure:1013, temperature:296}},
+  {id:'D', assetId:'none', x:200, y:0, z:0, angle:0, optics:{type:'detector', activeArea:10, responsivity:100}},
+ ];
+ const pt = id => ({x:0, y:0, z:0, itemId:id});
+ const t = traceGaussian({points:[pt('L'), pt('C'), pt('D')]}, its, () => null), c = t.points[1], d = t.points[2];
+ const g = gasAbsorption(its[1].optics);
+ close(c.gas.transmission, g.transmission, 1e-12);
+ close(c.powerOut, 10 * c.clip * c.gas.cellTransmission * g.transmission, 1e-12);
+ close(t.power.gasDelta, d.detectedPower * (1 / g.transmission - 1), 1e-12);
+ close(t.power.gasSignal, t.power.gasDelta * 1e-3 * 100, 1e-12);
+});
+
+test('alignment sensitivity: 1 mrad of mirror tilt moves the end spot by 2·B µm', () => {
+ const its = [
+  {id:'L', assetId:'laser', x:0, y:0, z:0, angle:0, optics:{type:'laser', wavelength:4.5, spec:'waist', diameter:2.5, m2:1, waistOffset:0}},
+  {id:'M', assetId:'none', x:100, y:0, z:0, angle:0, optics:{type:'mirror'}},
+  {id:'F', assetId:'none', x:100, y:0, z:150, angle:0, optics:{type:'lens', focal:100, material:'ideal'}},
+  {id:'D', assetId:'det', x:100, y:0, z:250, angle:0},
+ ];
+ const pt = id => ({x:0, y:0, z:0, itemId:id});
+ const plain = traceGaussian({points:[pt('L'), pt('M'), {x:100, y:0, z:400}]}, its, () => null);
+ close(plain.alignment[0].shift, 2 * 400, 1e-6);       // free space: lever arm 400 mm → 800 µm/mrad
+ const focused = traceGaussian({points:[pt('L'), pt('M'), pt('F'), pt('D')]}, its, () => null);
+ close(focused.alignment[0].shift, 2 * 100, 1e-6);     // detector in the lens's focal plane: B = f
+});
+
+test('the NanoPlus ICL lies with its two mounting holes facing the breadboard', () => {
+ const a = JSON.parse(fs.readFileSync(new URL('../src/lasers.json', import.meta.url), 'utf8')).find(x => x.id === 'supplied-nanoplus');
+ const box = m => { const lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9]; for (let i = 0; i < m.positions.length; i += 3) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], m.positions[i + k]); hi[k] = Math.max(hi[k], m.positions[i + k]); } return {lo, hi}; };
+ assert.equal(a.geometryRevision, 2);
+ const body = a.meshes.reduce((m, n) => n.positions.length > m.positions.length && !n.name ? n : m), b = box(body);
+ close(b.lo[1], 0, 1e-6);                                            // rests on its base
+ // The bores of both holes open on the base, either side of the mounting reference.
+ const rim = [];
+ for (let i = 0; i < body.positions.length; i += 3) if (Math.abs(body.positions[i + 1]) < .05 && Math.abs(body.positions[i + 2]) < 4 && Math.abs(body.positions[i]) < 14 && Math.abs(body.positions[i]) > 6) rim.push(body.positions[i]);
+ assert.ok(rim.some(x => x < 0) && rim.some(x => x > 0));
+ for (const m of a.meshes.filter(m => /DB9/.test(m.name))) assert.ok(box(m).lo[2] > 10);   // connectors face the side
+ const lens = a.meshes.find(m => box(m).hi[0] > 25.2), l = box(lens);
+ close((l.lo[1] + l.hi[1]) / 2, 25, .1); close((l.lo[2] + l.hi[2]) / 2, 0, .1);   // beam axis 25 mm up, over the post
+});
+
+test('gas cells: single pass or multipass, a body that follows the length, and the bounce path', () => {
+ const parts = JSON.parse(fs.readFileSync(new URL('../src/optics-parts.json', import.meta.url), 'utf8'));
+ const single = parts.find(a => a.id === 'default-gas-cell'), multi = parts.find(a => a.id === 'default-multipass-cell');
+ // Older projects without a mode: more than one pass reads as multipass.
+ assert.equal(itemOptics({assetId:'x', optics:{type:'gascell', passes:30}}, null).mode, 'multipass');
+ assert.equal(itemOptics({assetId:'x', optics:{type:'gascell', passes:1}}, null).mode, 'single');
+ assert.equal(itemOptics({assetId:multi.id}, multi).mode, 'multipass');
+ // A single-pass cell ignores a stored pass count.
+ const o = {type:'gascell', mode:'single', length:100, passes:30, ppm:100, sigma:1e-19, pressure:1013, temperature:296, window:'CaF2', coating:'ar', mirrorCoating:'gold'};
+ assert.equal(cellPasses(o), 1);
+ close(gasAbsorption(o).path, 100, 1e-9);
+ assert.equal(gasCellOptics(o, 4.5).reflections, 0);
+ close(gasAbsorption({...o, mode:'multipass', length:150}).path, 4500, 1e-9);
+ assert.throws(() => validateOptics({type:'gascell', mode:'triple'}));
+ assert.ok(single.meshes.some(m => m.glass) && multi.meshes.some(m => m.glass));
+ // The body stretches: the far flange moves by half the change, the centre stays.
+ const xs = meshes => meshes.flatMap(m => m.positions.filter((_, n) => n % 3 === 0));
+ const span = meshes => { const x = xs(meshes); return Math.max(...x) - Math.min(...x); };
+ close(span(cellMeshes(multi, 300)) - span(multi.meshes), 100, 1e-6);
+ close(span(cellMeshes(single, 60)) - span(single.meshes), -40, 1e-6);
+ // Bounce path: in on the axis, the set number of passes between the mirror planes, out on the axis.
+ const trace = {points:[{index:0, world:[0, 76, 0]}, {index:1, world:[300, 76, 0], d:2, cell:{mode:'multipass', length:200, passes:5, radius:21}}, {index:2, world:[600, 76, 0]}]};
+ const path = cellBounces(trace, trace.points[1]);
+ assert.equal(path.length, 6);                                  // 5 passes
+ assert.deepEqual(path[0].map(v => +v.toFixed(6)), [200, 76, 0]);
+ assert.deepEqual(path.at(-1).map(v => +v.toFixed(6)), [400, 76, 0]);
+ for (const q of path) assert.ok(Math.abs(Math.abs(q[0] - 300) - 100) < 1e-9 && Math.hypot(q[1] - 76, q[2]) <= 21);
+ assert.equal(cellBounces(trace, {...trace.points[1], cell:{...trace.points[1].cell, passes:4}}).length, 6);   // even: one extra pass
 });

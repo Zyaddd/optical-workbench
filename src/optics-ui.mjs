@@ -1,19 +1,21 @@
 // Optics in the editor: the Optics section in Properties, the physical-beam summary for a beam,
 // the hourglass beam mesh, the hover readout and the practice bench used by the optics tour.
-import {inRange, MATERIALS, LENS_PRESETS, OPTIC_TYPES, itemOptics, defaultOptics, validateOptics, laserBeam, effectiveFocal, refractiveIndex, traceGaussian, beamAt, envelopeSamples, focusOnEndpoint, COATINGS, LENS_COATINGS, mirrorReflectance, lensTransmission, surfaceReflectance, fmtPower, pct} from './optics.mjs';
+import {inRange, MATERIALS, LENS_PRESETS, OPTIC_TYPES, itemOptics, defaultOptics, validateOptics, laserBeam, effectiveFocal, refractiveIndex, traceGaussian, beamAt, envelopeSamples, focusOnEndpoint, COATINGS, LENS_COATINGS, mirrorReflectance, lensTransmission, surfaceReflectance, fmtPower, pct, FILTER_KINDS, COUPLER_KINDS, windowTransmission, filterTransmission, gasAbsorption, gasCellOptics, CELL_MODES, cellPasses, cellBounces} from './optics.mjs';
 import {translateItems} from './transforms.mjs';
+import {syncMounts} from './holders.mjs';
 import {scientific} from './mode.mjs';
 import {DEFAULT_BOARD} from './core.mjs';
 
 const fmt = (v, digits = 2) => !Number.isFinite(v) ? '∞' : Math.abs(v) >= 1000 ? v.toFixed(0) : v.toFixed(digits);
 const mm = v => fmt(v) + ' mm';
 const volts = v => v >= 1 ? v.toPrecision(3) + ' V' : +(v * 1000).toPrecision(3) + ' mV';
+const um = v => v >= 1000 ? (v / 1000).toFixed(2) + ' mm' : v.toFixed(0) + ' µm';
 const spot = d => d < .1 ? (d * 1000).toFixed(0) + ' µm' : mm(d);
 const el = (tag, props = {}, ...children) => { const e = Object.assign(document.createElement(tag), props); e.append(...children.filter(c => c != null)); return e; };
 const emit = (type, detail) => document.dispatchEvent(new CustomEvent(type, {detail}));
 
-export function traceRoute(b, items, catalog) {
- try { return traceGaussian(b, items, id => catalog.get(id)); } catch (e) { return {ok:false, error:e.message}; }
+export function traceRoute(b, items, catalog, routes = null) {
+ try { return traceGaussian(b, items, id => catalog.get(id), routes); } catch (e) { return {ok:false, error:e.message}; }
 }
 
 // ---------- 3D: the beam as a tube whose radius follows the Gaussian envelope ----------
@@ -42,11 +44,22 @@ function tubeGeometry(THREE, a, b, samples, radius, s0, radial = 28) {
  return g;
 }
 
+// Samples between t0 and t1, with the diameter interpolated at both cuts.
+function clipSamples(samples, t0, t1) {
+ const at = t => { const k = samples.findIndex(s => s.t >= t); if (k <= 0) return samples[Math.max(0, k)].d; const a = samples[k - 1], b = samples[k]; return a.d + (b.d - a.d) * (t - a.t) / (b.t - a.t || 1); };
+ return [{t:t0, d:at(t0)}, ...samples.filter(s => s.t > t0 && s.t < t1), {t:t1, d:at(t1)}];
+}
 export function physicsMeshes(THREE, b, trace, {flowBase, glowBase, preview = false}) {
  const out = [], opacity = b.opacity ?? 1;
  if (!trace?.ok || opacity === 0) return out;
  const core = d => Math.max(.06, Math.min(150, d / 2));
- for (const {segment, samples} of envelopeSamples(trace)) {
+ const cells = new Map(trace.points.filter(p => p.cell?.mode === 'multipass' && p.cell.passes > 1).map(p => [p.index, p]));
+ for (const {segment, samples: all} of envelopeSamples(trace)) {
+  // Inside a multipass cell the bounce pattern replaces the straight beam: stop at its entrance window, restart at its exit.
+  const t0 = cells.has(segment.index) ? Math.min(segment.length, cells.get(segment.index).cell.length / 2) : 0;
+  const t1 = cells.has(segment.index + 1) ? Math.max(t0, segment.length - cells.get(segment.index + 1).cell.length / 2) : segment.length;
+  if (t1 - t0 < .01) continue;
+  const samples = t0 === 0 && t1 === segment.length ? all : clipSamples(all, t0, t1);
   const tag = {routeId:b.id, physics:true, segment, trace};
   for (const [scale, alpha] of [[1, 1], [1.35, .26], [2.4, .07]]) {
    const radius = d => core(d) + (scale - 1) * Math.max(.5, Math.min(core(d), 2.5));
@@ -62,6 +75,19 @@ export function physicsMeshes(THREE, b, trace, {flowBase, glowBase, preview = fa
    f.material.addEventListener('dispose', () => tex.dispose());
    Object.assign(f.userData, tag, {flow:true});
    out.push(f);
+  }
+ }
+ for (const p of cells.values()) {
+  const path = cellBounces(trace, p);
+  if (!path) continue;
+  for (let j = 0; j < path.length - 1; j++) {
+   const length = Math.hypot(...path[j + 1].map((v, k) => v - path[j][k])), samples = [{t:0, d:p.d}, {t:length, d:p.d}];
+   for (const [scale, alpha] of [[1, .95], [2.2, .16]]) {
+    const m = new THREE.Mesh(tubeGeometry(THREE, path[j], path[j + 1], samples, d => Math.max(.25, Math.min(core(d), 1.2)) * scale, 0, 12),
+     new THREE.MeshBasicMaterial({color:b.color, transparent:true, opacity:opacity * alpha * (preview ? .5 : 1), depthWrite:false, side:THREE.DoubleSide, blending:scale === 1 ? THREE.NormalBlending : THREE.AdditiveBlending}));
+    m.userData.routeId = b.id; m.userData.cellPass = true; m.renderOrder = 3;
+    out.push(m);
+   }
   }
  }
  // Focus markers: a thin ring and glow where the beam is narrowest.
@@ -84,15 +110,21 @@ export function physicsMeshes(THREE, b, trace, {flowBase, glowBase, preview = fa
 
 // ---------- Focus helper ----------
 export function moveEndpointToFocus(b, state, catalog) {
- const trace = traceRoute(b, state.items, catalog);
+ const trace = traceRoute(b, state.items, catalog, state.beams);
  if (!trace.ok) throw Error(trace.error);
  const f = focusOnEndpoint(trace);
  if (!f?.ok) throw Error(f?.reason || 'No focus found.');
  const end = b.points.at(-1), item = end.itemId && state.items.find(i => i.id === end.itemId);
  const [dx, dy, dz] = f.move;
  if (item) {
-  if (item.locked) throw Error(item.name + ' is locked. Unlock it to move it to the focus.');
-  translateItems(state.items, [item.id], dx, dz, dy, catalog);
+  // A part on a post holder moves with its holder, as you would slide the post across the table.
+  let root = item;
+  while (root.mount) root = state.items.find(i => i.id === root.mount.holderId) || {};
+  if (!root.id) root = item;
+  const locked = [item, root].find(i => i.locked);
+  if (locked) throw Error(locked.name + ' is locked. Unlock it to move it to the focus.');
+  translateItems(state.items, [root.id], dx, dz, 0, catalog);
+  if (dy) translateItems(state.items, [item.id], 0, 0, dy, catalog);
  } else { end.x += dx; end.y += dy; end.z += dz; }
  return f;
 }
@@ -109,13 +141,21 @@ export function routeOpticsSummary(b, trace, {onFocus}) {
   if (p.f != null) parts.push(`f ${fmt(p.f, 1)} mm`, p.focus > 0 ? (p.focusReached ? `focus ${fmt(p.focus, 1)} mm after (Ø ${spot(p.focusDiameter)})` : 'next optic comes before the focus') : 'beam diverges after it');
   if (p.activeArea) parts.push(p.d <= p.activeArea ? `fits the ${p.activeArea} mm detector` : `larger than the ${p.activeArea} mm detector`);
   if (p.index === 0) parts.push(fmtPower(p.powerOut));
+
   else if (p.clip != null) parts.push(`${fmtPower(p.powerOut)} after it${p.clip < .995 ? ` (aperture passes ${pct(p.clip)})` : ''}`);
   else if (p.detectedPower != null) parts.push(`${fmtPower(p.detectedPower)} on the active area${p.signal != null ? ` → ${volts(p.signal)}` : ''}`);
+  else if (p.coupledPower != null) parts.push(`${pct(p.coupling)} ${p.couplerKind === 'pinhole' ? 'passes the pinhole' : 'couples into the fibre'} → ${fmtPower(p.coupledPower)}`);
+  if (p.arm) parts.push(`${p.arm} arm`);
+  if (p.gas) parts.push(`${fmt(p.gas.path, 0)} mm of gas absorbs ${pct(1 - p.gas.transmission)}`);
   list.append(el('li', {}, el('b', {textContent:p.name}), el('span', {textContent:' · ' + parts.join(' · ')})));
  }
  box.append(list);
- const P = trace.power, arrives = P.detected ?? P.end;
- box.append(el('div', {id:'routePower', className:'opticsLine strong', textContent:`Power: ${fmtPower(P.start)} from the laser → ${fmtPower(arrives)} ${P.detected != null ? 'on the detector' : 'at the endpoint'} (${pct(arrives / P.start)})`}));
+ const P = trace.power, arrives = P.detected ?? P.coupled ?? P.end;
+ const where = P.detected != null ? 'on the detector' : P.coupled != null ? (trace.end.couplerKind === 'pinhole' ? 'through the pinhole' : 'in the fibre') : 'at the endpoint';
+ box.append(el('div', {id:'routePower', className:'opticsLine strong', textContent:`Power: ${fmtPower(P.start)} from the ${P.fromSplitter ? 'splitter' : 'laser'} → ${fmtPower(arrives)} ${where} (${pct(arrives / P.start)})`}));
+ if (P.gasDelta != null) box.append(el('div', {id:'routeGas', className:'opticsLine', textContent:`Absorption signal: the gas lowers the detector power by ${fmtPower(P.gasDelta)}${P.gasSignal != null ? `, ${volts(P.gasSignal)}` : ''}.`}));
+ const worst = trace.alignment?.[0];
+ if (worst) box.append(el('div', {id:'routeAlign', className:'opticsLine', textContent:`Alignment: 1 mrad of tilt at ${worst.name} moves the end spot ${um(worst.shift)}, ${worst.ofArea != null ? `${pct(worst.ofArea)} of the active area` : `${pct(worst.ofSpot)} of the spot`}. ${trace.alignment.length > 1 ? `The least sensitive is ${trace.alignment.at(-1).name} (${um(trace.alignment.at(-1).shift)}).` : ''}`.trim()}));
  for (const w of trace.waists) box.append(el('div', {className:'opticsLine', textContent:`Focus at ${fmt(w.s, 1)} mm from the laser · Ø ${spot(w.d)} · depth of focus ±${fmt(w.zR, 1)} mm`}));
  const f = focusOnEndpoint(trace);
  const button = el('button', {id:'routeFocus', textContent:'Move endpoint to the focus', disabled:!f?.ok});
@@ -124,7 +164,7 @@ export function routeOpticsSummary(b, trace, {onFocus}) {
  box.append(button);
  if (f && !f.ok) box.append(el('p', {className:'muted', textContent:f.reason}));
  for (const w of trace.warnings) box.append(el('p', {className:'opticsWarn', textContent:w}));
- box.append(el('p', {className:'muted', textContent:'Paraxial Gaussian model with thin lenses. Power includes aperture clipping, coatings and Fresnel loss (typical coating curves); aberrations, scattering and absorption in the glass are not included.'}));
+ box.append(el('p', {className:'muted', textContent:'Paraxial Gaussian model with thin lenses. Power includes aperture clipping, coatings, Fresnel loss, filters and gas absorption (typical coating curves, one gas line); aberrations, scattering, polarisation and absorption in the glass are not included.'}));
  return box;
 }
 
@@ -166,6 +206,11 @@ export function createOpticsUI(api) {
   grid.append(select('opticsCoating', 'Coating', Object.entries(COATINGS).map(([k, c]) => [k, c.name]), o.coating || 'gold', v => apply(i, {coating:v}, 'coating')));
   if (o.coating === 'custom') grid.append(field(i, o, 'reflectance', 'Reflectance', {unit:'%', min:0, max:100, hint:'From the coating datasheet at your wavelength.'}));
  }
+ function check(id, label, value, onchange) {
+  const c = el('input', {id, type:'checkbox', checked:value});
+  c.onchange = () => onchange(c.checked);
+  return el('label', {className:'opticsCheck'}, c, label);
+ }
  function select(id, label, options, value, onchange) {
   const s = el('select', {id});
   for (const [v, text] of options) s.append(el('option', {value:v, textContent:text}));
@@ -204,6 +249,38 @@ export function createOpticsUI(api) {
   } else if (o.type === 'mirror') {
    grid.append(field(i, o, 'aperture', 'Clear aperture', {unit:'mm', min:.1}));
    mirrorCoating(i, o, grid);
+  } else if (o.type === 'splitter') {
+   grid.append(field(i, o, 'reflectance', 'Reflected share', {unit:'%', min:0, max:100, hint:'R of R:T. The beam that goes straight on gets the rest. Start a second beam on the splitter for the other arm.'}));
+   grid.append(field(i, o, 'aperture', 'Clear aperture', {unit:'mm', min:.1}));
+  } else if (o.type === 'window') {
+   grid.append(select('opticsWindowMaterial', 'Material', Object.entries(MATERIALS).filter(([k]) => k !== 'ideal').map(([k, m]) => [k, m.name]), o.material, v => apply(i, {material:v}, 'material')));
+   grid.append(select('opticsLensCoating', 'Coating', Object.entries(LENS_COATINGS), o.coating || 'ar', v => apply(i, {coating:v}, 'coating')));
+   grid.append(check('opticsBrewster', 'At Brewster’s angle (p-polarised)', !!o.brewster, v => apply(i, {brewster:v}, 'brewster')));
+   grid.append(field(i, o, 'aperture', 'Clear aperture', {unit:'mm', min:.1}));
+  } else if (o.type === 'filter') {
+   grid.append(select('opticsFilterKind', 'Kind', Object.entries(FILTER_KINDS), o.kind, v => apply(i, {kind:v}, 'kind')));
+   if (o.kind === 'bandpass') {
+    grid.append(field(i, o, 'center', 'Centre wavelength', {unit:'µm', min:.2, max:30}));
+    grid.append(field(i, o, 'fwhm', 'Bandwidth (FWHM)', {unit:'µm', min:.001}));
+    grid.append(field(i, o, 'peak', 'Peak transmission', {unit:'%', min:0, max:100}));
+   } else grid.append(field(i, o, 'od', 'Optical density', {min:0, max:10, hint:'Transmission is 10^-OD: OD 1 passes 10%, OD 2 passes 1%.'}));
+   grid.append(field(i, o, 'aperture', 'Clear aperture', {unit:'mm', min:.1}));
+  } else if (o.type === 'gascell') {
+   const multi = o.mode === 'multipass';
+   grid.append(select('opticsCellMode', 'Cell type', Object.entries(CELL_MODES), o.mode, v => apply(i, {mode:v, ...(v === 'multipass' && !(o.passes > 1) ? {passes:30} : {})}, 'mode')));
+   grid.append(field(i, o, 'length', multi ? 'Distance per pass' : 'Cell length', {unit:'mm', min:.1, hint:multi ? 'Mirror spacing: the beam travels this far on each pass. The cell drawing stretches to match.' : 'Length of gas the beam crosses once. The cell drawing stretches to match.'}));
+   if (multi) grid.append(field(i, o, 'passes', 'Passes', {step:1, min:2, max:1000, hint:'Number of times the beam crosses the cell. The path is distance per pass × passes. An even count is drawn with one extra pass so the beam leaves through the far window.'}));
+   grid.append(field(i, o, 'aperture', 'Entrance aperture', {unit:'mm', min:.1, hint:'Window clear aperture, or the input hole of a multipass cell.'}));
+   grid.append(select('opticsCellWindow', 'Windows', Object.entries(MATERIALS).filter(([k]) => k !== 'ideal').map(([k, m]) => [k, m.name]), o.window, v => apply(i, {window:v}, 'window')));
+   grid.append(select('opticsLensCoating', 'Window coating', Object.entries(LENS_COATINGS), o.coating || 'ar', v => apply(i, {coating:v}, 'coating')));
+   if (multi) grid.append(select('opticsMirrorCoating', 'Mirror coating', Object.entries(COATINGS).filter(([k]) => k !== 'custom').map(([k, c]) => [k, c.name]), o.mirrorCoating || 'gold', v => apply(i, {mirrorCoating:v}, 'mirrorCoating')));
+   grid.append(field(i, o, 'ppm', 'Concentration', {unit:'ppm', min:0}));
+   grid.append(field(i, o, 'sigma', 'Line cross-section', {unit:'cm²', min:0, hint:'Absorption cross-section at the laser wavelength, e.g. from HITRAN (line strength × line shape at its peak).'}));
+   grid.append(field(i, o, 'pressure', 'Pressure', {unit:'mbar', min:.001}));
+   grid.append(field(i, o, 'temperature', 'Temperature', {unit:'K', min:1}));
+  } else if (o.type === 'coupler') {
+   grid.append(select('opticsCouplerKind', 'Kind', Object.entries(COUPLER_KINDS), o.kind, v => apply(i, {kind:v}, 'kind')));
+   grid.append(o.kind === 'pinhole' ? field(i, o, 'pinhole', 'Pinhole diameter', {unit:'µm', min:.1}) : field(i, o, 'mfd', 'Mode field diameter', {unit:'µm', min:.1, hint:'From the fibre datasheet, at your wavelength.'}));
   } else if (o.type === 'detector') {
    grid.append(field(i, o, 'activeArea', 'Active area (square side)', {unit:'mm', min:.001}));
    grid.append(field(i, o, 'rangeMin', 'Range from', {unit:'µm', min:.2, max:30, optional:true, hint:'Shortest wavelength the detector responds to.'}));
@@ -215,7 +292,7 @@ export function createOpticsUI(api) {
  }
  function readout(i) {
   const o = itemOptics(i, catalog.get(i.assetId)), box = $('opticsReadout'), lines = [], warn = [];
-  const traces = routesThrough(i.id).filter(b => b.physics).map(b => ({b, t:traceRoute(b, getState().items, catalog)})).filter(x => x.t.ok);
+  const traces = routesThrough(i.id).filter(b => b.physics).map(b => ({b, t:traceRoute(b, getState().items, catalog, getState().beams)})).filter(x => x.t.ok);
   const at = x => x.t.points.find(p => x.b.points[p.index]?.itemId === i.id);
   if (o.type === 'laser') {
    const L = laserBeam(o);
@@ -235,6 +312,16 @@ export function createOpticsUI(api) {
    const lambda = traces[0]?.t.laser.wavelength ?? sceneWavelength();
    lines.push(`Reflects ${pct(mirrorReflectance(o, lambda))} at ${lambda} µm (${o.coating === 'custom' ? 'set reflectance' : COATINGS[o.coating || 'gold'].name.toLowerCase() + ', typical'}).`);
   }
+  const lambdaHere = () => traces[0]?.t.laser.wavelength ?? sceneWavelength();
+  if (o.type === 'splitter') lines.push(`Reflects ${fmt(o.reflectance, 0)}% and transmits ${fmt(100 - o.reflectance, 0)}%. Start a second beam on this splitter for the other arm.`);
+  if (o.type === 'window') lines.push(o.brewster ? 'At Brewster’s angle: no reflection loss for p-polarised light.' : `${o.coating === 'uncoated' ? 'Uncoated' : 'AR coated'}: transmits ${pct(windowTransmission(o, lambdaHere()))} at ${lambdaHere()} µm.`);
+  if (o.type === 'filter') lines.push(`Transmits ${pct(filterTransmission(o, lambdaHere()))} at ${lambdaHere()} µm${o.kind === 'bandpass' ? ` (pass band ${fmt(o.center - o.fwhm / 2)}–${fmt(o.center + o.fwhm / 2)} µm)` : ` (OD ${o.od})`}.`);
+  if (o.type === 'gascell') {
+   const g = gasAbsorption(o), c = gasCellOptics(o, lambdaHere());
+   lines.push(`Path ${fmt(g.path, 0)} mm${cellPasses(o) > 1 ? ` (${cellPasses(o)} passes of ${fmt(o.length, 0)} mm)` : ' (single pass)'} · ${g.n.toExponential(2)} molecules/cm³ · absorbance ${g.tau.toPrecision(3)}: the gas absorbs ${pct(1 - g.transmission)}.`);
+   lines.push(`Windows pass ${pct(c.windows)}${c.reflections ? ` · ${c.reflections} mirror reflections pass ${pct(c.mirrors)}` : ''}.`);
+  }
+  if (o.type === 'coupler') lines.push(o.kind === 'pinhole' ? `Pinhole Ø ${o.pinhole} µm.` : `Couples best when the beam arrives as a flat waist of Ø ${o.mfd} µm.`);
   if (o.type === 'detector' && o.responsivity == null) lines.push('Add the range, responsivity and output limit from the datasheet to see the signal and check for saturation.');
   else if (o.type === 'none') lines.push('Beam points on this part only fold or end the path. Set a role to give it optical power.');
   for (const x of traces) {
@@ -244,7 +331,13 @@ export function createOpticsUI(api) {
    if (o.type === 'laser') lines.push(`${x.b.name}: starts here.`);
    else if (p.f != null) lines.push(`${x.b.name}: arrives Ø ${spot(p.d)} → ${p.focus > 0 ? (p.focusReached ? `focus ${fmt(p.focus, 1)} mm after, Ø ${spot(p.focusDiameter)}` : 'next optic is before the focus') : 'diverges after it'}`);
    else lines.push(`${x.b.name}: Ø ${spot(p.d)} here${p.activeArea ? (p.d <= p.activeArea ? ' · fits the active area' : ' · larger than the active area') : ''}`);
-   if (p.clip != null) lines.push(`${x.b.name}: ${fmtPower(p.powerIn)} in → ${fmtPower(p.powerOut)} out${p.clip < .995 ? ` · the aperture passes ${pct(p.clip)}` : ''}`);
+   if (p.index === 0 && p.arm) lines.push(`${x.b.name}: starts here with the ${p.arm} ${fmtPower(p.powerOut)}`);
+   if (p.clip != null) lines.push(`${x.b.name}: ${fmtPower(p.powerIn)} in → ${fmtPower(p.powerOut)} out${p.arm ? ` (${p.arm})` : ''}${p.clip < .995 ? ` · the aperture passes ${pct(p.clip)}` : ''}`);
+   if (p.gas) lines.push(`${x.b.name}: the gas absorbs ${fmtPower(p.gas.absorbed)}`);
+   if (p.coupledPower != null) lines.push(`${x.b.name}: ${fmtPower(p.powerIn)} arrives · ${pct(p.coupling)} ${p.couplerKind === 'pinhole' ? 'passes' : 'couples'} = ${fmtPower(p.coupledPower)}${p.couplerKind !== 'pinhole' ? ` (beam Ø ${spot(p.d)}, ${!Number.isFinite(p.R) || Math.abs(p.R) > 1e5 ? 'flat wavefront' : `wavefront R ${fmt(p.R, 0)} mm`})` : ''}`);
+   if (p.gasDelta != null) lines.push(`${x.b.name}: the gas lowers this by ${fmtPower(p.gasDelta)}${p.gasSignal != null ? ` (${volts(p.gasSignal)})` : ''}: the absorption signal.`);
+   const tilt = x.t.alignment?.find(a => a.index === p.index);
+   if (tilt) lines.push(`${x.b.name}: 1 mrad of tilt here moves the end spot ${um(tilt.shift)}${tilt === x.t.alignment[0] && x.t.alignment.length > 1 ? ', the most of any mirror' : ''}.`);
    else if (p.detectedPower != null) lines.push(`${x.b.name}: ${fmtPower(p.powerIn)} arrives · ${pct(p.captured)} on the active area = ${fmtPower(p.detectedPower)}${p.signal != null ? ` → ${volts(p.signal)}${p.saturated ? ', saturated' : ''}` : ''}`);
    for (const w of x.t.warnings) if (w.startsWith(p.name + ':') && !/off-axis, so the focus is astigmatic|reflects .* at each surface/.test(w)) { const t = w.slice(p.name.length + 2); warn.push(t[0].toUpperCase() + t.slice(1)); }
   }
@@ -309,15 +402,21 @@ export function createOpticsUI(api) {
 
  // A small, complete bench for the optics tour: laser → lens → detector at one beam height.
  function buildPractice() {
-  const state = getState(), need = ['supplied-nanoplus', 'default-lens', 'default-vigo-detector'];
+  const state = getState(), need = ['supplied-nanoplus', 'default-lens', 'default-vigo-detector', 'lab-adjustable-holder'];
   if (need.some(id => !catalog.get(id))) { toast('The practice parts are still loading. Try again in a moment.'); return null; }
   checkpoint();
   const id = () => globalThis.crypto?.randomUUID?.() || 'id-' + Math.random().toString(36).slice(2);
-  // Heights put every optical centre 26 mm above the board: ICL lens 25 mm + 1, lens centre 26, detector window 20 mm + 6.
-  const laser = {id:id(), name:'ICL laser', assetId:'supplied-nanoplus', x:-165.1, z:12.7, y:1, angle:0, locked:false, partNumber:''};
-  const lens = {id:id(), name:'Lens L1', assetId:'default-lens', x:-12.7, z:12.7, y:0, angle:0, locked:false, partNumber:'', optics:{type:'lens', focal:100, material:'ZnSe', designWavelength:10.6, aperture:25.4}};
-  const det = {id:id(), name:'MCT detector', assetId:'default-vigo-detector', x:165.1, z:15.1, y:6, angle:270, locked:false, partNumber:''};
-  Object.assign(state, {board:{...DEFAULT_BOARD}, secondaryBoard:null, items:[laser, lens, det], measurements:[], name:'Optics practice bench'});
+  // Every part stands on a post holder. Post lengths put each optical centre 76 mm above the board:
+  // holder top 50 mm, then ICL lens 25 mm (post +1), lens centre 26 mm, detector window 20 mm (post +6).
+  const holder = (x, z, angle, post) => ({id:id(), name:'Post holder', assetId:'lab-adjustable-holder', x, z, y:0, angle, locked:false, partNumber:'', ...(post ? {holder:{post:22.225 + post}} : {})});
+  const on = (h, part) => ({...part, x:h.x, z:h.z, y:0, mount:{holderId:h.id, x:0, z:0, angle:((part.angle - h.angle) % 360 + 360) % 360, offset:0}});
+  const hL = holder(-165.1, 12.7, 180, 1), hO = holder(-12.7, 12.7, 90), hD = holder(165.1, 15.1, 0, 6);
+  const laser = on(hL, {id:id(), name:'ICL laser', assetId:'supplied-nanoplus', angle:0, locked:false, partNumber:''});
+  const lens = on(hO, {id:id(), name:'Lens L1', assetId:'default-lens', angle:0, locked:false, partNumber:'', optics:{type:'lens', focal:100, material:'ZnSe', designWavelength:10.6, aperture:25.4}});
+  const det = on(hD, {id:id(), name:'MCT detector', assetId:'default-vigo-detector', angle:270, locked:false, partNumber:''});
+  const items = [hL, laser, hO, lens, hD, det];
+  syncMounts(items, catalog);
+  Object.assign(state, {board:{...DEFAULT_BOARD}, secondaryBoard:null, items, measurements:[], name:'Optics practice bench'});
   state.beams = [{id:id(), name:'Beam 1', enabled:true, color:'#ff3434', width:.5, opacity:1, physics:true, points:[
    {x:24.4, y:25, z:0, itemId:laser.id}, {x:0, y:26, z:0, itemId:lens.id}, {x:-2.4, y:20, z:42.5, itemId:det.id}]}];
   commit();

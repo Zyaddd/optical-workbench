@@ -662,6 +662,7 @@ button:active:not(:disabled){transform:translateY(.5px) scale(.985)}
 .opticsReadout p{margin:4px 0;font-size:12px;line-height:1.5;color:var(--ink-2)}
 .opticsReadout button{margin-top:6px}
 .opticsReadout p.opticsWarn{color:var(--warn)}
+.opticsCheck{display:flex;align-items:center;gap:8px;grid-column:1/-1}
 .opticsSummary{margin:6px 0 12px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-md);background:color-mix(in srgb,var(--beam) 4%,var(--surface));font-size:12px;line-height:1.5}
 .opticsLine{color:var(--ink-2);margin:2px 0}
 .opticsLine.strong{color:var(--ink);font-weight:600}

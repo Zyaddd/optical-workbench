@@ -65,7 +65,7 @@ export function diagramParts(asset, hideMounts = true) {
  return kept.length ? kept : meshes;
 }
 
-const TYPE_LABEL = {lens:'Lens', mirror:'Plane mirror', spherical:'Concave mirror', parabolic:'Parabolic mirror', detector:'Detector'};
+const TYPE_LABEL = {lens:'Lens', mirror:'Plane mirror', spherical:'Concave mirror', parabolic:'Parabolic mirror', splitter:'Beam splitter', window:'Window', filter:'Filter', gascell:'Gas cell', coupler:'Fibre', detector:'Detector'};
 export function cleanName(s) {
  return String(s || '').replace(/\.(step|stp|stl|obj)$/i, '').replace(/_+/g, ' ').replace(/\s*\([^)]*\)/g, '').replace(/\s+\d+$/, '').replace(/\s+/g, ' ').trim();
 }
