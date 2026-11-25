@@ -14,6 +14,10 @@ node build-pages.mjs
 
 Open `dist/Optical_Workbench.html` in Chrome or Edge. This build runs offline. The `dist` folder also contains the public landing page and example project. To try the example, choose **Project → Open** in the workbench and select `dist/Example.optics.json`.
 
+## Build setups with Claude
+
+`mcp/server.mjs` is an MCP server that lets Claude build setups from a chat. Claude places the parts on holders, aims them, traces the beams and shows the result live in the workbench. `npm run build:mcp` packs it as a one-click Claude Desktop extension, `dist/Optical_Workbench.mcpb`. To connect it to Claude Desktop or Claude Code, see [mcp/README.md](mcp/README.md).
+
 ## Publish on GitHub Pages
 
 GitHub Pages serves the offline and guest workbench. For usernames, sign-in and saved projects there are two options:

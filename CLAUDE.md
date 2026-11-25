@@ -18,6 +18,11 @@ Optical Workbench is a Three.js application for laying out laser spectroscopy ex
 - `src/core.mjs` validates `.optics.json` files. `src/cad-worker.js` converts imported STEP files locally using the vendored OpenCascade importer.
 - `src/account-ui.mjs`, `server/accounts.mjs`, and `server/start.mjs` implement signup, sign-in, and the saved project dashboard. Account-project storage requires the Node server and a persistent SQLite database. The hosting instructions are in `README.md`.
 - `web/index.html` is the landing page shown before the workbench. `src/landing.mjs` is its live 3D bench tour, bundled inline by `build-landing.mjs`. It loads `web/hero-scene.bin`, which `node scripts/hero-scene.mjs` builds from the packaged library meshes. Rerun that script if those meshes change. `src/scene-fx.mjs` holds the optical table, shadows and camera motion shared by both pages.
+- `mcp/server.mjs` is the MCP server (stdio JSON-RPC, no dependencies) that lets Claude build setups by chat. `mcp/workbench.mjs` holds its setup model:
+  - `PARTS` gives each library part's optical point and axis, which decide placement and aiming;
+  - it places parts on post holders and builds beam paths from distances and turns;
+  - it traces beams with `src/optics.mjs` and runs collision and board-edge checks.
+  The server also serves `dist/Optical_Workbench.html` on 127.0.0.1 as a live view. `src/live.mjs` is the workbench side; it only runs when the page address carries the server's `?live=` key. Items it places carry an optional `mcpPart` field. `build-mcp.mjs` packs `dist/Optical_Workbench.mcpb` for Claude Desktop. Setup instructions are in `mcp/README.md`, and the tests are in `tests/mcp.test.mjs`.
 - `src/cloud-accounts.mjs`, `build-cloud.mjs` and `supabase/schema.sql` give the GitHub Pages build the same accounts through Supabase when `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set. Setup is in `supabase/README.md`.
 
 ## Original STEP files and runtime meshes
