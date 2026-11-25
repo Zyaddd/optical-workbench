@@ -18,7 +18,7 @@ export const DEFAULT_BEAM_HEIGHT = 76.0126;
 // What the server knows about each library part: where its optical point sits in the part's own frame
 // (x along the part, y up from its base, z across) and which way light runs through it.
 //  kind laser: emits along local +x from `point`.  transmit: the beam runs along local X through `point`.
-//  mirror / splitter: the reflecting face points along local `face`.  end: the beam arrives travelling `axis`.
+//  mirror / splitter: the reflecting face points along local `face` ('+x', '-x', or a compass angle in the part's own frame).  end: the beam arrives travelling `axis`.
 export const PARTS = {
  'nanoplus-laser': {asset:'supplied-nanoplus', label:'Laser', kind:'laser', point:{x:24.4, y:25, z:0},
   about:'NanoPlus interband cascade laser (mid-IR), lying on its side with its mounting holes down. Emits from its collimating lens.'},
@@ -26,11 +26,11 @@ export const PARTS = {
   about:'Alpes quantum cascade laser in an HHL package. The emission point is approximate: check it in the app.'},
  'lens': {asset:'default-lens', label:'Lens', kind:'transmit', point:{x:0, y:26, z:0},
   about:'Ø25.4 mm lens in a mount. Set focal, material and design wavelength in optics.'},
- 'mirror': {asset:'default-flat-mirror', label:'Mirror', kind:'mirror', face:'-x', point:{x:0, y:26, z:0},
+ 'mirror': {asset:'default-flat-mirror', label:'Mirror', kind:'mirror', face:'+x', point:{x:17, y:26, z:0.9},
   about:'Flat Ø25.4 mm mirror in a kinematic mount.'},
- 'concave-mirror': {asset:'default-flat-mirror', label:'Concave mirror', kind:'mirror', face:'-x', point:{x:0, y:26, z:0}, optics:{type:'spherical'},
+ 'concave-mirror': {asset:'default-flat-mirror', label:'Concave mirror', kind:'mirror', face:'+x', point:{x:17, y:26, z:0.9}, optics:{type:'spherical'},
   about:'Concave spherical mirror (f = R/2), drawn with the flat mirror mount. Set roc in optics.'},
- 'parabolic-mirror': {asset:'default-parabolic-mirror', label:'Parabolic mirror', kind:'mirror', face:'+x', point:{x:0, y:26, z:0},
+ 'parabolic-mirror': {asset:'default-parabolic-mirror', label:'Parabolic mirror', kind:'mirror', face:315, point:{x:17, y:26, z:1},
   about:'Off-axis parabolic mirror (90° off-axis by default). Focuses a collimated beam; set focal in optics.'},
  'beam-splitter': {asset:'default-beam-splitter', label:'Beam splitter', kind:'splitter', face:'-x', point:{x:0, y:26, z:0},
   about:'Beam splitter plate at 45°. Set reflectance (%) in optics.'},
@@ -122,7 +122,7 @@ function orientation(profile, din, dout) {
   const f = [dout[0] - din[0], dout[1] - din[1]], n = Math.hypot(...f);
   if (n < 1e-9) throw Error('A mirror cannot send the beam straight on. Give it a turn.');
   const [fx, fz] = [f[0] / n, f[1] / n];
-  return profile.face === '+x' ? normalizeAngle(Math.atan2(-fz, fx) * 180 / Math.PI) : normalizeAngle(Math.atan2(fz, -fx) * 180 / Math.PI);
+  return normalizeAngle(angleOf([fx, fz]) - faceAngle(profile));
  }
  const phi = angleOf(profile.kind === 'laser' ? dout : din);
  if (profile.kind === 'end' && profile.axis === '-z') return normalizeAngle(phi - 90);
@@ -133,9 +133,12 @@ function axisDirection(profile, angle) {
  if (profile.kind === 'end' && profile.axis === '-z') return normalizeAngle(angle + 90);
  return normalizeAngle(angle);
 }
+// The way the reflecting face points in the part's own frame, as a compass angle (0 = local +x, 270 = local +z).
+function faceAngle(profile) {
+ return Number.isFinite(profile.face) ? profile.face : profile.face === '+x' ? 0 : 180;
+}
 function faceNormal(profile, angle) {
- const [x, z] = vec(angle); // local +x in the world
- return profile.face === '+x' ? [x, z] : [-x, -z];
+ return vec(angle + faceAngle(profile));
 }
 const reflect2 = (d, n) => { const k = 2 * (d[0] * n[0] + d[1] * n[1]); return [d[0] - k * n[0], d[1] - k * n[1]]; };
 
@@ -233,7 +236,7 @@ export function angleFrom(prof, {direction:d, facing, angle}) {
  if (prof.kind === 'mirror' || prof.kind === 'splitter') {
   if (facing == null) return null;
   const f = direction(facing, 'facing');
-  return prof.face === '+x' ? f : f + 180;
+  return normalizeAngle(f - faceAngle(prof));
  }
  if (d == null) return null;
  const v = direction(d);
@@ -283,6 +286,27 @@ export function setAngle(p, lib, item, angle) {
 export function moveTo(p, lib, item, x, z) {
  const at = opticalPoint(p, item, lib).world, root = rootOf(p, item);
  translateItems(p.items, [root.id], x - at.x, z - at.z, 0, lib.byId);
+}
+// Setups made before the mirror mounts were read from their meshes have flat mirrors turned back to front
+// (knobs towards the beam) and parabolic mirrors 45° out, with the beam meeting the mount origin.
+// Turn each such mirror so the same surface normal comes from its reflecting face, and put that face on the
+// old bounce point. Only parts the server placed (mcpPart) whose beam still meets the mount origin are changed.
+const OLD_FACE = {'mirror':180, 'concave-mirror':180, 'parabolic-mirror':0};
+export function repairOldMirrors(p, lib) {
+ const fixed = [];
+ for (const item of p.items) {
+  const prof = PARTS[item.mcpPart];
+  if (!(item.mcpPart in OLD_FACE) || prof.asset !== item.assetId || item.locked) continue;
+  const refs = (p.beams || []).flatMap(b => b.points.filter(q => q.itemId === item.id));
+  if (!refs.length || !refs.every(q => Math.hypot(q.x, q.z) < 1)) continue;
+  const o = rotateXZ(refs[0].x, refs[0].z, item.angle), bounce = [item.x + o.x, item.z + o.z];
+  setAngle(p, lib, item, normalizeAngle(item.angle + OLD_FACE[item.mcpPart] - faceAngle(prof)));
+  moveTo(p, lib, item, bounce[0], bounce[1]);
+  for (const q of refs) Object.assign(q, {x:prof.point.x, y:prof.point.y, z:prof.point.z});
+  if (item.mount) tidyHolders(p, lib, new Set([item.mount.holderId]));
+  fixed.push(item);
+ }
+ return fixed;
 }
 export function removeItem(p, item) {
  const root = rootOf(p, item), gone = descendantIds(p.items, [root.id]);

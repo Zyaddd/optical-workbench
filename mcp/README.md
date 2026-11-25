@@ -70,6 +70,8 @@ Positions are in mm on the board as seen from above. x runs to the right, z runs
 
 A part's position is its optical point, where the beam meets it. The default beam height is 76 mm, which suits the standard holders.
 
+For a mirror, the optical point is on its reflecting surface, and the mount and adjusters sit behind it. Setups made with the first release had flat mirrors turned back to front and parabolic mirrors 45° out. The server turns those mirrors round when it opens such a setup, keeping every bounce point and the beam unchanged. Their mounts now sit behind the beam, so a mirror at a board corner may need moving in from the edge.
+
 ## Settings
 
 | Variable | Default | Purpose |

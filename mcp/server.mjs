@@ -36,6 +36,14 @@ try {
  project = W.checkProject({...saved.project, assets:saved.custom || []}, lib, custom);
  savedPath = saved.savedPath || null;
 } catch (e) { if (e.code !== 'ENOENT') log('Starting a new setup:', e.message); }
+try {
+ const draft = JSON.parse(JSON.stringify(project)), fixed = W.repairOldMirrors(draft, lib);
+ if (fixed.length) {
+  project = W.checkProject({...draft, assets:W.customAssets(draft, lib, custom)}, lib, custom);
+  log(`Turned ${fixed.length} mirror${fixed.length > 1 ? 's' : ''} placed by an older version to face the beam.`);
+  persist();
+ }
+} catch (e) { log('Could not turn old mirrors:', e.message); }
 
 function persist() {
  try {
@@ -322,14 +330,17 @@ async function callTool(name, args = {}) {
   case 'open_setup': {
    const file = path.resolve(String(args.path || ''));
    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+   let fixed = [];
    change(p => {
     const next = W.checkProject(data, lib, custom);
     if (!data.beamHeight || data.beamHeight === 50) next.beamHeight = W.inferBeamHeight(next, lib);
     for (const k of Object.keys(p)) delete p[k];
     Object.assign(p, next);
+    fixed = W.repairOldMirrors(p, lib);
    });
    savedPath = file; persist();
-   return text(`Opened ${file}.\n\n` + W.describe(project, lib, custom) + footer());
+   const note = fixed.length ? `This file was made by an older version that mounted ${fixed.map(i => i.name).join(', ')} the wrong way round. They now face the beam from the same bounce points; save the setup to keep this.\n\n` : '';
+   return text(`Opened ${file}.\n\n` + note + W.describe(project, lib, custom) + footer());
   }
   case 'undo': {
    if (!history.length) return text('Nothing to undo.');
