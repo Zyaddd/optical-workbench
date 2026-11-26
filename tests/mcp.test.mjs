@@ -152,6 +152,13 @@ test('the MCP server answers over stdio', async () => {
   const built = await rpc('tools/call', {name:'build_beam_path', arguments:{start:{component:'laser', x:-150, z:0}, steps:[{component:'lens', distance:60}, {component:'detector', distance:100}]}});
   assert.ok(!built.result.isError, built.result.content[0].text);
   assert.match(built.result.content[0].text, /Detector 1/);
+  assert.ok(tools.result.tools.some(t => t.name === 'optimize_setup'));
+  const proposal = await rpc('tools/call', {name:'optimize_setup', arguments:{goal:'spot', apply:false}});
+  assert.ok(!proposal.result.isError, proposal.result.content[0].text);
+  assert.match(proposal.result.content[0].text, /goal "spot"/);
+  const opt = await rpc('tools/call', {name:'optimize_setup', arguments:{goal:'power'}});
+  assert.ok(!opt.result.isError, opt.result.content[0].text);
+  assert.match(opt.result.content[0].text, /In short:/);
   const bad = await rpc('tools/call', {name:'edit_component', arguments:{id:'nope'}});
   assert.ok(bad.result.isError);
   const missing = await rpc('no/such/method', {});

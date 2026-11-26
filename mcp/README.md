@@ -45,6 +45,8 @@ The server runs locally, so it does not work with Claude on the web or the mobil
 
 > Swap the lens for a 75 mm one, and show me the top view.
 
+> The cell mirrors have a 100 mm radius. How many passes does it really make, and what pass count gives the strongest gas signal? Optimise the setup for that.
+
 > Save it as gas-cell.optics.json.
 
 The first change opens the workbench in your browser at `http://127.0.0.1:4180/`. It follows each change as Claude makes it. You can drag parts, change settings or undo there, and Claude sees the result the next time it reads the setup. When the workbench is open, Claude can also take a picture of it (`view_workbench`).
@@ -58,7 +60,8 @@ The first change opens the workbench in your browser at `http://127.0.0.1:4180/`
 | `build_beam_path` | Lays out a whole beam path from a laser (or a splitter's second arm). You give distances and turns; it places, mounts and aims each part, then draws a physical beam. |
 | `add_component`, `edit_component`, `remove_component` | Place, move, turn, rename, retune, lock or remove one part. Its holder moves with it. |
 | `add_beam`, `remove_beam` | Draw or remove a beam through parts that are already placed. |
-| `analyze_setup` | Traces each beam: diameter, focus and waist, power after each loss, gas absorption, detector power and signal, fibre coupling, alignment sensitivity and warnings. Also checks for collisions and parts over the board edge. |
+| `analyze_setup` | Traces each beam. It starts with a plain-language summary, then gives diameter, focus and waist, power after each loss, gas absorption, multipass cell numbers, detector power and signal, fibre coupling, alignment sensitivity and warnings. It ends with what `optimize_setup` could gain. Also checks for collisions and parts over the board edge. |
+| `optimize_setup` | Improves a beam for a goal: the strongest gas signal, the most light at the end, or the smallest spot. It slides lenses, windows, filters, cells and the end part along the beam and picks a multipass cell's pass count, making the smallest changes that get close to the best. Locked parts stay put. `apply: false` only reports the proposal. |
 | `move_to_focus` | Slides the detector, fibre port or pinhole at the end of a beam to the focus. |
 | `view_workbench`, `open_workbench` | Takes a picture of the 3D workbench, or opens it in the browser. |
 | `save_setup`, `open_setup` | Saves or opens `.optics.json` files. Saved files carry the part models, so the app opens them anywhere. |
@@ -71,6 +74,15 @@ Positions are in mm on the board as seen from above. x runs to the right, z runs
 A part's position is its optical point, where the beam meets it. The default beam height is 76 mm, which suits the standard holders.
 
 For a mirror, the optical point is on its reflecting surface, and the mount and adjusters sit behind it. Setups made with the first release had flat mirrors turned back to front and parabolic mirrors 45° out. The server turns those mirrors round when it opens such a setup, keeping every bounce point and the beam unchanged. Their mounts now sit behind the beam, so a mirror at a board corner may need moving in from the edge.
+
+## Multipass cells
+
+For a multipass cell, `length` is the mirror spacing and `passes` is the pass count. The analysis gives these numbers:
+- the path through the gas, and how many times longer it is than one pass;
+- how much stronger the gas signal is than one pass gives, once the light lost at each mirror bounce is counted;
+- the pass count that gives the strongest signal with those mirrors.
+
+Set `mirrorRoc`, the mirrors' radius of curvature, to use the real Herriott geometry. The spots then turn by θ each pass, where cos θ = 1 − spacing/R. The beam leaves through the coupling hole (`aperture`) after N passes when N·θ is a whole number of turns. `passes` becomes the target count, and the analysis gives the spacing that reaches it. It also gives how many passes fit before neighbouring spots reach the hole.
 
 ## Settings
 

@@ -304,3 +304,56 @@ test('gas cells: single pass or multipass, a body that follows the length, and t
  for (const q of path) assert.ok(Math.abs(Math.abs(q[0] - 300) - 100) < 1e-9 && Math.hypot(q[1] - 76, q[2]) <= 21);
  assert.equal(cellBounces(trace, {...trace.points[1], cell:{...trace.points[1].cell, passes:4}}).length, 6);   // even: one extra pass
 });
+
+test('Herriott cells: the passes follow from the mirror radius, the spacing and the coupling hole', async () => {
+ const {herriottCell, herriottDesign, herriottSpacing, herriottWarnings, RING_SHARE} = await import('../src/optics.mjs');
+ const ring = 21 * RING_SHARE;
+ const cell = {type:'gascell', mode:'multipass', length:200, passes:30, mirrorCoating:'gold', window:'CaF2', coating:'ar', aperture:6, ppm:1000, sigma:1e-19, pressure:1013, temperature:296, mirrorRoc:300};
+ // cos θ = 1 − d/R per pass, and N·θ = 2π·M closes the pattern.
+ const d = herriottDesign(300, 30, 200);
+ assert.equal(d.M, 7);
+ close(d.spacing, 300 * (1 - Math.cos(2 * Math.PI * 7 / 30)), 1e-9);
+ close(herriottSpacing(300, 30, 7), d.spacing, 1e-12);
+ const at = herriottCell({...cell, length:d.spacing}, ring);
+ close(Math.cos(at.theta), 1 - d.spacing / 300, 1e-12);
+ assert.equal(at.exit, 30);
+ assert.equal(at.M, 7);
+ assert.equal(cellPasses({...cell, length:d.spacing}, ring), 30);
+ assert.deepEqual(herriottWarnings('C', at, 2), []);
+ // Off the design spacing the beam leaves at another pass count, and the warning gives the spacing for 30.
+ const off = herriottCell(cell, ring);
+ assert.notEqual(off.exit, 30);
+ assert.equal(cellPasses(cell, ring), off.exit);
+ assert.match(herriottWarnings('C', off, 2)[0], /leaves after \d+ passes, not the 30 set\. For 30 passes set the spacing to 268\.6 mm/);
+ // Mirrors more than 2R apart cannot hold the beam.
+ const loose = herriottCell({...cell, length:700}, ring);
+ assert.equal(loose.stable, false);
+ assert.match(herriottWarnings('C', loose, 2)[0], /cannot hold the beam/);
+ // Spots 2π/N apart on the ring must stay clear of the hole: 2r·sin(π/N) ≥ the hole radius.
+ assert.equal(at.maxPasses, Math.floor(Math.PI / Math.asin(3 / (2 * ring))));
+ assert.match(herriottWarnings('C', herriottCell({...cell, passes:40}, ring), 2).join(' '), /40 passes do not fit/);
+ // Without a mirror radius nothing changes: the set pass count holds.
+ assert.equal(herriottCell({...cell, mirrorRoc:undefined}), null);
+ assert.equal(cellPasses({...cell, mirrorRoc:undefined}), 30);
+ assert.equal(validateOptics(cell).mirrorRoc, 300);
+ assert.throws(() => validateOptics({...cell, mirrorRoc:.5}));
+});
+
+test('cell insight: path gain, signal gain over one pass, and the best pass count for the mirrors', async () => {
+ const {cellInsight} = await import('../src/optics.mjs');
+ const cell = {type:'gascell', mode:'multipass', length:100, passes:30, mirrorCoating:'gold', window:'CaF2', coating:'ar', aperture:6, ppm:1, sigma:1e-21, pressure:1013, temperature:296};
+ const i = cellInsight(cell, 4.5), R = mirrorReflectance({coating:'gold'}, 4.5);
+ assert.equal(i.pathGain, 30);
+ close(i.path, 3000, 1e-9);
+ const tau1 = i.gas.tau / 30, sig = N => R ** (N - 1) * -Math.expm1(-N * tau1);
+ close(i.signalGain, sig(30) / sig(1), 1e-9);
+ // For a weak line the signal goes as N·R^(N−1), which peaks at N ≈ −1/ln R.
+ assert.ok(Math.abs(i.bestPasses - -1 / Math.log(R)) <= 1, `best ${i.bestPasses}`);
+ assert.ok(i.bestGain >= i.signalGain);
+ // A strong line saturates sooner, so fewer passes are best.
+ assert.ok(cellInsight({...cell, ppm:5000, sigma:1e-19}, 4.5).bestPasses < i.bestPasses);
+ // A single-pass cell gains nothing.
+ const one = cellInsight({...cell, mode:'single'}, 4.5);
+ assert.equal(one.pathGain, 1);
+ close(one.signalGain, 1, 1e-12);
+});

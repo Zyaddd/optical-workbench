@@ -88,8 +88,13 @@ export function itemOptics(item, asset) {
  return o;
 }
 export const CELL_MODES = {single:'Single pass', multipass:'Multipass (Herriott)'};
-// Passes that count: a single-pass cell always has one, whatever its stored pass count.
-export const cellPasses = o => o.mode === 'single' ? 1 : (o.passes || 1);
+// Passes that count: a single-pass cell always has one, whatever its stored pass count. A multipass cell
+// with its mirror radius set takes the passes its mirror geometry gives (see herriottCell).
+export function cellPasses(o, ring) {
+ if (o.mode === 'single') return 1;
+ const h = herriottCell(o, ring);
+ return h?.stable && h.exit ? h.exit : (o.passes || 1);
+}
 
 const num = (v, lo, hi) => Number.isFinite(v) && v >= lo && v <= hi;
 export function validateOptics(o) {
@@ -122,7 +127,7 @@ export function validateOptics(o) {
  if (o.type === 'gascell') {
   pick('mode', Object.keys(CELL_MODES)); take('length', .1, 1e5); take('passes', 1, 1000); if (out.passes != null && !Number.isInteger(out.passes)) bad();
   pick('mirrorCoating', Object.keys(COATINGS)); pick('window', Object.keys(MATERIALS)); pick('coating', Object.keys(LENS_COATINGS));
-  take('aperture', .1, 1000); take('ppm', 0, 1e6); take('sigma', 0, 1e-14); take('pressure', .001, 1e5); take('temperature', 1, 2000);
+  take('aperture', .1, 1000); take('ppm', 0, 1e6); take('sigma', 0, 1e-14); take('pressure', .001, 1e5); take('temperature', 1, 2000); take('mirrorRoc', 1, 1e5);
  }
  if (o.type === 'coupler') { pick('kind', Object.keys(COUPLER_KINDS)); take('mfd', .1, 5000); take('pinhole', .1, 1e5); }
  if (o.type === 'detector') {
@@ -182,6 +187,80 @@ export function gasCellOptics(o, wavelength) {
  const windows = lensTransmission({material:o.window, coating:o.coating}, wavelength) ** 2;
  const reflections = Math.max(0, cellPasses(o) - 1), mirrors = reflections ? mirrorReflectance({coating:o.mirrorCoating}, wavelength) ** reflections : 1;
  return {windows, mirrors, reflections, transmission:windows * mirrors};
+}
+
+// ---------- Multipass (Herriott) cells ----------
+// Two concave mirrors of radius R spaced d apart hold the beam for 0 < d < 2R. Each pass turns the ring of
+// spots by θ, cos θ = 1 − d/R, so after n passes the spot sits at angle n·θ on the ring. The beam leaves when
+// a spot lands on the coupling hole, which is at the entry angle: after N passes when N·θ = 2π·M. A spot that
+// comes within the hole's radius of it earlier leaks out there instead.
+export const RING_SHARE = .75;          // the spot ring's radius as a share of the cell's inner radius
+export const DEFAULT_RING = 21 * RING_SHARE;
+export const MAX_PASSES = 1000;
+const gcd = (a, b) => b ? gcd(b, a % b) : a;
+export const herriottSpacing = (R, N, M) => R * (1 - Math.cos(2 * Math.PI * M / N));
+// The mirror spacing that gives exactly N passes, choosing the pattern (M) whose spacing is nearest `near`.
+export function herriottDesign(R, N, near) {
+ let best = null;
+ for (let M = 1; M < N / 2; M++) if (gcd(N, M) === 1) {
+  const d = herriottSpacing(R, N, M);
+  if (!best || Math.abs(d - near) < Math.abs(best.spacing - near)) best = {passes:N, M, spacing:d};
+ }
+ return best;
+}
+// What the mirror geometry does: null unless the cell is multipass with its mirror radius set.
+export function herriottCell(o, ring = DEFAULT_RING) {
+ if (o?.mode !== 'multipass' || !(o.mirrorRoc > 0)) return null;
+ const R = o.mirrorRoc, d = o.length, hole = (o.aperture ?? 6) / 2, target = Math.max(2, Math.round(o.passes || 2));
+ // Most passes a ring of this radius can hold before neighbouring spots reach the hole: spots N·θ = 2π·M
+ // apart by 2π/N, so the chord 2r·sin(π/N) must stay wider than the hole's radius.
+ const maxPasses = hole < 2 * ring ? Math.min(MAX_PASSES, Math.floor(Math.PI / Math.asin(Math.min(1, hole / (2 * ring))))) : 1;
+ const base = {roc:R, spacing:d, ring, hole, target, maxPasses};
+ if (!(d > 0 && d < 2 * R)) return {...base, stable:false};
+ const theta = Math.acos(1 - d / R);
+ const miss = n => { const a = n * theta / (2 * Math.PI); return 2 * ring * Math.sin(Math.abs(a - Math.round(a)) * Math.PI); };
+ let exit = null;
+ for (let n = 1; n <= MAX_PASSES; n++) if (miss(n) < hole) { exit = n; break; }
+ // Closest two spots on one mirror (front: even passes, rear: odd), as a chord on the ring.
+ let gap = Infinity;
+ const n = exit || MAX_PASSES;
+ for (const parity of [0, 1]) {
+  const a = [];
+  for (let k = parity; k < n; k += 2) a.push(((k * theta) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI));
+  a.sort((x, y) => x - y);
+  for (let k = 0; k < a.length; k++) { const da = k ? a[k] - a[k - 1] : a[0] + 2 * Math.PI - a.at(-1); if (a.length > 1) gap = Math.min(gap, 2 * ring * Math.sin(da / 2)); }
+ }
+ return {...base, stable:true, theta, exit, M:exit ? Math.round(exit * theta / (2 * Math.PI)) : null, spotGap:gap, design:herriottDesign(R, target, d)};
+}
+// What a gas cell does, in the terms people ask about: the path, how many times longer it is than one pass,
+// how much stronger the absorption signal is than one pass gives (the path, less the mirror losses), and the
+// pass count that gives the strongest signal with these mirrors.
+export function cellInsight(o, wavelength, ring = DEFAULT_RING) {
+ const geo = herriottCell(o, ring), passes = cellPasses(o, ring), oc = {...o, passes, mirrorRoc:undefined};
+ const gas = gasAbsorption(oc), cell = gasCellOptics(oc, wavelength);
+ const Rm = mirrorReflectance({coating:o.mirrorCoating}, wavelength), tau1 = gas.tau / passes;
+ // The absorption signal at the detector: what the mirrors pass times what the gas takes (∝ N·τ when weak).
+ const signal = N => Rm ** (N - 1) * (tau1 > 0 ? -Math.expm1(-N * tau1) : N);
+ const one = signal(1);
+ let best = passes;
+ if (o.mode === 'multipass') {
+  const top = geo?.stable ? geo.maxPasses : MAX_PASSES;
+  best = 1;
+  for (let N = 2; N <= top; N++) if (signal(N) > signal(best) * (1 + 1e-9)) best = N;
+ }
+ return {passes, perPass:o.length, path:gas.path, pathGain:passes, mirrorReflectance:Rm, signalGain:signal(passes) / one, bestPasses:best, bestGain:signal(best) / one,
+  gas, cell, herriott:geo};
+}
+const mm1 = v => String(+v.toFixed(1));
+// What is wrong with a cell's mirror geometry, and how to fix it. `d` is the beam diameter at the cell.
+export function herriottWarnings(name, geo, d) {
+ const out = [];
+ if (!geo.stable) return [`${name}: the mirrors (R ${mm1(geo.roc)} mm) are ${mm1(geo.spacing)} mm apart, more than 2R = ${mm1(2 * geo.roc)} mm, so they cannot hold the beam: it walks out of the cell after a few passes. Bring them closer than ${mm1(2 * geo.roc)} mm.`];
+ const fix = geo.design && geo.target <= geo.maxPasses ? ` For ${geo.target} passes set the spacing to ${mm1(geo.design.spacing)} mm.` : geo.target > geo.maxPasses ? ` ${geo.target} passes do not fit on a ${mm1(geo.ring)} mm spot ring with a Ø ${mm1(2 * geo.hole)} mm hole: at most ${geo.maxPasses}.` : '';
+ if (!geo.exit) out.push(`${name}: with the mirrors ${mm1(geo.spacing)} mm apart the beam never comes back to the hole within ${MAX_PASSES} passes.${fix}`);
+ else if (geo.exit !== geo.target) out.push(`${name}: with the mirrors ${mm1(geo.spacing)} mm apart (R ${mm1(geo.roc)} mm) the beam leaves after ${geo.exit} passes, not the ${geo.target} set.${fix}`);
+ if (Number.isFinite(geo.spotGap) && d && geo.spotGap < 1.5 * d) out.push(`${name}: neighbouring spots on the mirrors are ${mm1(geo.spotGap)} mm apart for a Ø ${d < 1 ? (d * 1000).toFixed(0) + ' µm' : mm1(d) + ' mm'} beam, so they overlap; this causes interference fringes. Use fewer passes or a smaller beam.`);
+ return out;
 }
 // Power coupled into a single-mode fibre: overlap of the beam (radius w, wavefront R) with the fibre mode
 // (radius MFD/2, flat) at the fibre face. For a pinhole, the share of the beam that passes.
@@ -358,13 +437,15 @@ export function traceGaussian(route, items, assetOf, routes = null, depth = 0) {
    else if (o.type === 'window') eff = windowTransmission(o, lambda);
    else if (o.type === 'filter') eff = filterTransmission(o, lambda);
    else if (o.type === 'gascell') {
-    const gas = gasAbsorption(o), cell = gasCellOptics(o, lambda);
-    eff = cell.transmission * gas.transmission;
     // What the drawing needs: the cell's length along the beam, its passes and the spot-ring radius.
-    const spec = assetOf(here.item.assetId)?.cellSpec;
-    info.cell = {mode:o.mode, length:o.length, passes:cellPasses(o), radius:spec?.radius ?? Math.max(4, (o.aperture || 20) / 2)};
+    const spec = assetOf(here.item.assetId)?.cellSpec, radius = spec?.radius ?? Math.max(4, (o.aperture || 20) / 2);
+    const ins = cellInsight(o, lambda, radius * RING_SHARE), gas = ins.gas, cell = ins.cell, geo = ins.herriott;
+    eff = cell.transmission * gas.transmission;
+    info.cell = {mode:o.mode, length:o.length, passes:ins.passes, radius, theta:geo?.stable ? geo.theta : null};
+    info.insight = ins;
     info.gas = {...gas, windows:cell.windows, mirrors:cell.mirrors, reflections:cell.reflections, cellTransmission:cell.transmission, absorbed:P * clip * cell.transmission * (1 - gas.transmission)};
     if (gas.tau > 2.3) warnings.push(`${info.name}: the gas absorbs ${pct(1 - gas.transmission)} (absorbance ${gas.tau.toFixed(2)}), so the line is saturated. Shorten the path or lower the concentration for a linear signal.`);
+    if (geo) warnings.push(...herriottWarnings(info.name, geo, info.d));
    }
    else if (o.type === 'coupler') { const eta = couplingEfficiency(o, info.d, info.R, beam.lambda); eff = eta; info.coupling = eta; }
    Object.assign(info, {clip, efficiency:eff});
@@ -433,7 +514,8 @@ export function cellBounces(trace, p, maxPasses = 61) {
  const u0 = cross(d, ref), un = Math.hypot(...u0), u = u0.map(v => v / un), v = cross(d, u);
  let passes = Math.min(maxPasses, p.cell.passes);
  if (passes % 2 === 0) passes += 1;
- const half = p.cell.length / 2, r = p.cell.radius * .62, turn = Math.PI * 2 * (Math.round(passes * .38) || 1) / passes;
+ // A cell with its mirror geometry set turns the ring by its own θ each pass; otherwise an even spread.
+ const half = p.cell.length / 2, r = p.cell.radius * RING_SHARE, turn = p.cell.theta || Math.PI * 2 * (Math.round(passes * .38) || 1) / passes;
  const point = (along, j) => { const a = j * turn, x = j ? Math.cos(a) * r : 0, y = j ? Math.sin(a) * r : 0; return c.map((w, k) => w + d[k] * along + u[k] * x + v[k] * y); };
  const path = [point(-half, 0)];
  for (let j = 1; j < passes; j++) path.push(point(j % 2 ? half : -half, j));
