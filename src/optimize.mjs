@@ -194,6 +194,6 @@ export function plainSummary(t) {
  }
  const spot = end.d < .1 ? (end.d * 1000).toFixed(0) + ' µm' : end.d.toFixed(2) + ' mm';
  if (end.captured != null) out.push(end.captured >= .995 ? `The whole beam lands on the detector (Ø ${spot} on a ${end.activeArea} mm element).` : end.captured >= .9 ? `${pct(end.captured)} of the beam lands on the ${end.activeArea} mm detector (the beam is Ø ${spot} there).` : `Only ${pct(end.captured)} of the beam lands on the ${end.activeArea} mm detector: the beam is Ø ${spot} there.`);
- if (end.signal != null) out.push(`The detector gives ${end.signal >= 1 ? end.signal.toPrecision(3) + ' V' : +(end.signal * 1000).toPrecision(3) + ' mV'}${P.gasSignal != null ? `, of which the gas changes ${P.gasSignal >= 1 ? P.gasSignal.toPrecision(3) + ' V' : +(P.gasSignal * 1000).toPrecision(3) + ' mV'}` : ''}${end.saturated ? ', but it is saturated' : ''}.`);
+ if (end.signal != null) out.push(`The detector gives ${end.signal >= 1 ? end.signal.toPrecision(3) + ' V' : +(end.signal * 1000).toPrecision(3) + ' mV'}${P.gasSignal != null ? `, and the gas lowers it by ${P.gasSignal >= 1 ? P.gasSignal.toPrecision(3) + ' V' : +(P.gasSignal * 1000).toPrecision(3) + ' mV'} (that drop is the gas signal)` : ''}${end.saturated ? ', but it is saturated' : ''}.`);
  return out;
 }
