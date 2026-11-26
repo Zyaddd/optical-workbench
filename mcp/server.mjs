@@ -220,7 +220,9 @@ const TOOLS = [
  {name:'add_beam', description:'Draw a physical beam through parts already on the board, in order (the first should be a laser or a beam splitter another beam passes through). Optionally ends at a free point. Does not move or turn anything.',
   inputSchema:{type:'object', required:['through'], properties:{through:{type:'array', items:{type:'string'}}, end:{type:'object', properties:{x:{type:'number'}, z:{type:'number'}}}, name:{type:'string'}, color:{type:'string'}}}},
  {name:'remove_beam', description:'Remove a beam (the parts stay).', inputSchema:{type:'object', required:['id'], properties:{id:{type:'string'}}}},
- {name:'analyze_setup', description:'Trace the physical beams: beam diameter at every part, focus positions and waist sizes, power after each loss, gas absorption, detector power and signal, fibre coupling, alignment sensitivity, and warnings; plus collision and board-edge checks.', inputSchema:{type:'object', properties:{beam:{type:'string', description:'Only this beam (id or name).'}}}},
+ {name:'analyze_setup', description:'Trace the physical beams: a plain-language summary of what each beam does, then beam diameter at every part, focus positions and waist sizes, power after each loss, gas absorption, multipass cell numbers (path, gain over one pass, the best pass count, the mirror geometry), detector power and signal, fibre coupling, alignment sensitivity, warnings, and what optimize_setup could gain; plus collision and board-edge checks.', inputSchema:{type:'object', properties:{beam:{type:'string', description:'Only this beam (id or name).'}}}},
+ {name:'optimize_setup', description:'Improve a beam for a goal: "absorption" (strongest gas absorption signal at the detector), "power" (most light on the detector, into the fibre or at the end) or "spot" (smallest spot at the end). It slides lenses, windows, filters, gas cells and the part at the end along the beam, and picks a multipass cell\'s pass count (with its mirror spacing when the cell\'s mirrorRoc is set). It makes the smallest changes that get close to the best, and reports how far each part can move while keeping 99%. Locked parts and parts on other beams stay put. Set apply false to see the proposal without changing anything.',
+  inputSchema:{type:'object', properties:{goal:{type:'string', enum:['absorption', 'power', 'spot'], description:'Default: absorption when the beam crosses gas, otherwise power.'}, beam:{type:'string', description:'Beam id or name (default: the first physical beam, or the one through gas for absorption).'}, parts:{type:'array', items:{type:'string'}, description:'Only change these parts (ids or names).'}, apply:{type:'boolean', description:'Make the changes (default true).'}}}},
  {name:'move_to_focus', description:'Slide the part at the end of a beam (detector, fibre port, pinhole) along the last leg to where the beam focuses.', inputSchema:{type:'object', required:['id'], properties:{id:{type:'string'}}}},
  {name:'view_workbench', description:'A picture of the setup as the workbench draws it in 3D. Opens the live workbench in the browser if it is not open yet.', inputSchema:{type:'object', properties:{view:{type:'string', enum:['iso', 'top', 'front', 'side', 'current'], description:'Camera: iso (default), top, front, side, or current to keep the user\'s view.'}}}},
  {name:'open_workbench', description:'Open the live 3D workbench in the browser. It follows every change Claude makes, and changes the user makes there come back to Claude.', inputSchema:{type:'object', properties:{}}},
@@ -298,6 +300,12 @@ async function callTool(name, args = {}) {
    return text(`Removed ${id}.` + footer());
   }
   case 'analyze_setup': return text(W.analyze(project, lib, custom, args.beam ? W.findBeam(project, args.beam) : null) + footer());
+  case 'optimize_setup': {
+   const opts = {goal:args.goal, beam:args.beam, parts:args.parts, apply:args.apply !== false};
+   if (!opts.apply) { const r = W.optimise(JSON.parse(JSON.stringify(project)), lib, custom, opts); return text(r.text); }
+   const r = change(p => { const out = W.optimise(p, lib, custom, opts); return {text:out.text, beam:out.beam.id}; });
+   return text(r.text + '\n\n' + W.analyze(project, lib, custom, W.findBeam(project, r.beam)) + footer());
+  }
   case 'move_to_focus': {
    const f = change(p => {
     const i = W.findItem(p, args.id), out = W.moveToFocus(p, lib, custom, i), h = i.mount && p.items.find(x => x.id === i.mount.holderId);
@@ -355,7 +363,7 @@ async function callTool(name, args = {}) {
 const INSTRUCTIONS = `Optical Workbench builds optical breadboard setups (lasers, lenses, mirrors, splitters, gas cells, detectors) and traces the beams physically (Gaussian beams with M², lens dispersion, power losses, gas absorption, detector signal).
 Coordinates are mm on the breadboard seen from above: x to the right, z towards the front; the board is centred on (0, 0). Directions are compass angles: 0 = +x (right), 90 = back (−z), 180 = left, 270 = front (+z); turns are left (+90) or right (−90).
 Positions name the optical point (where the beam meets the part). Every part goes on a post holder so all optical points share the beam height.
-Usual flow: list_components → new_setup → build_beam_path (lays out a whole beam path from distances and turns) → analyze_setup → adjust with edit_component or move_to_focus → view_workbench to see it. The user watches a live 3D workbench in the browser and can edit there; call get_setup before editing if they may have changed something.`;
+Usual flow: list_components → new_setup → build_beam_path (lays out a whole beam path from distances and turns) → analyze_setup → adjust with edit_component, move_to_focus or optimize_setup (improves a beam for a goal such as the strongest gas signal) → view_workbench to see it. analyze_setup starts each beam with a plain-language summary; use it to explain the setup to the user in everyday words. The user watches a live 3D workbench in the browser and can edit there; call get_setup before editing if they may have changed something.`;
 
 function reply(id, result) { process.stdout.write(JSON.stringify({jsonrpc:'2.0', id, result}) + '\n'); }
 function fail(id, code, message) { process.stdout.write(JSON.stringify({jsonrpc:'2.0', id, error:{code, message}}) + '\n'); }

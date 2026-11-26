@@ -1,6 +1,7 @@
 // Optics in the editor: the Optics section in Properties, the physical-beam summary for a beam,
 // the hourglass beam mesh, the hover readout and the practice bench used by the optics tour.
-import {inRange, MATERIALS, LENS_PRESETS, OPTIC_TYPES, itemOptics, defaultOptics, validateOptics, laserBeam, effectiveFocal, refractiveIndex, traceGaussian, beamAt, envelopeSamples, focusOnEndpoint, COATINGS, LENS_COATINGS, mirrorReflectance, lensTransmission, surfaceReflectance, fmtPower, pct, FILTER_KINDS, COUPLER_KINDS, windowTransmission, filterTransmission, gasAbsorption, gasCellOptics, CELL_MODES, cellPasses, cellBounces} from './optics.mjs';
+import {inRange, MATERIALS, LENS_PRESETS, OPTIC_TYPES, itemOptics, defaultOptics, validateOptics, laserBeam, effectiveFocal, refractiveIndex, traceGaussian, beamAt, envelopeSamples, focusOnEndpoint, COATINGS, LENS_COATINGS, mirrorReflectance, lensTransmission, surfaceReflectance, fmtPower, pct, FILTER_KINDS, COUPLER_KINDS, windowTransmission, filterTransmission, CELL_MODES, cellBounces, cellInsight, herriottDesign, RING_SHARE, DEFAULT_RING} from './optics.mjs';
+import {optimiseBeam, defaultGoal, describeChanges, resultText, plainSummary, GOALS} from './optimize.mjs';
 import {translateItems} from './transforms.mjs';
 import {syncMounts} from './holders.mjs';
 import {scientific} from './mode.mjs';
@@ -129,12 +130,45 @@ export function moveEndpointToFocus(b, state, catalog) {
  return f;
 }
 
+// ---------- Optimiser ----------
+// Improve a beam for a goal and apply the changes: parts slide with their post holders, multipass cells take
+// the new pass count (and mirror spacing). Throws with the reason when nothing can be done.
+export function optimiseRoute(b, state, catalog, goal) {
+ const r = optimiseBeam(state, b, id => catalog.get(id), {goal});
+ if (!r.ok) throw Error(r.reason);
+ for (const c of r.changes) {
+  const item = state.items.find(i => i.id === c.id);
+  if (!item) continue;
+  if (c.kind === 'position') {
+   let root = item;
+   while (root.mount) root = state.items.find(i => i.id === root.mount.holderId) || {};
+   if (!root.id) root = item;
+   translateItems(state.items, [root.id], c.move[0], c.move[1], 0, catalog);
+  } else item.optics = validateOptics({...itemOptics(item, catalog.get(item.assetId)), passes:c.to, ...(c.length != null ? {length:c.length} : {})});
+ }
+ return r;
+}
+const chosenGoal = new Map(); // beam id → the goal last picked in its summary
+
 // ---------- Route summary shown in the beam's Properties ----------
-export function routeOpticsSummary(b, trace, {onFocus}) {
+export function routeOpticsSummary(b, trace, {onFocus, onOptimise}) {
  const box = el('div', {id:'routeOptics', className:'opticsSummary'});
  if (!trace.ok) { box.append(el('p', {className:'opticsWarn', textContent:trace.error})); return box; }
  const L = trace.laser;
  box.append(el('div', {className:'opticsLine strong', textContent:`${L.wavelength} µm · waist Ø ${spot(L.waistDiameter)} · divergence ${fmt(L.divergence)} mrad · M² ${L.m2}`}));
+ const story = plainSummary(trace);
+ if (story.length) box.append(el('div', {id:'routeStory', className:'opticsStory'}, el('b', {textContent:'In short. '}), story.join(' ')));
+ if (onOptimise) {
+  const goals = Object.entries(GOALS).filter(([k]) => k !== 'absorption' || trace.points.some(p => p.gas));
+  const goal = el('select', {id:'routeGoal'});
+  for (const [k, g] of goals) goal.append(el('option', {value:k, textContent:g.label}));
+  goal.value = goals.some(([k]) => k === chosenGoal.get(b.id)) ? chosenGoal.get(b.id) : defaultGoal(trace);
+  goal.onchange = () => chosenGoal.set(b.id, goal.value);
+  const run = el('button', {id:'routeOptimise', textContent:'Optimise'});
+  run.title = 'Slides lenses, windows, filters, cells and the part at the end along the beam, and picks the multipass pass count, for the goal. Locked parts stay put. Undo brings everything back.';
+  run.onclick = () => onOptimise(goal.value);
+  box.append(el('div', {className:'opticsOptimise'}, el('label', {}, 'Optimise for', goal), run));
+ }
  const list = el('ol', {className:'opticsPath'});
  for (const p of trace.points) {
   const parts = [`${fmt(p.s, 1)} mm`, `Ø ${spot(p.d)}`];
@@ -269,8 +303,9 @@ export function createOpticsUI(api) {
    const multi = o.mode === 'multipass';
    grid.append(select('opticsCellMode', 'Cell type', Object.entries(CELL_MODES), o.mode, v => apply(i, {mode:v, ...(v === 'multipass' && !(o.passes > 1) ? {passes:30} : {})}, 'mode')));
    grid.append(field(i, o, 'length', multi ? 'Distance per pass' : 'Cell length', {unit:'mm', min:.1, hint:multi ? 'Mirror spacing: the beam travels this far on each pass. The cell drawing stretches to match.' : 'Length of gas the beam crosses once. The cell drawing stretches to match.'}));
-   if (multi) grid.append(field(i, o, 'passes', 'Passes', {step:1, min:2, max:1000, hint:'Number of times the beam crosses the cell. The path is distance per pass × passes. An even count is drawn with one extra pass so the beam leaves through the far window.'}));
-   grid.append(field(i, o, 'aperture', 'Entrance aperture', {unit:'mm', min:.1, hint:'Window clear aperture, or the input hole of a multipass cell.'}));
+   if (multi) grid.append(field(i, o, 'passes', o.mirrorRoc ? 'Target passes' : 'Passes', {step:1, min:2, max:1000, hint:o.mirrorRoc ? 'The pass count you want. The mirror geometry decides the real count; use "Set spacing" below to make them match.' : 'Number of times the beam crosses the cell. The path is distance per pass × passes. An even count is drawn with one extra pass so the beam leaves through the far window.'}));
+   if (multi) grid.append(field(i, o, 'mirrorRoc', 'Mirror radius of curvature', {unit:'mm', min:1, optional:true, hint:'From the cell datasheet. With it set, the passes follow from the mirror spacing (cos θ = 1 − d/R per pass) and the coupling hole, as in a real Herriott cell.'}));
+   grid.append(field(i, o, 'aperture', multi ? 'Coupling hole' : 'Entrance aperture', {unit:'mm', min:.1, hint:multi ? 'Diameter of the hole the beam enters and leaves through. It clips a wide beam, and a spot that lands on it leaves the cell.' : 'Window clear aperture.'}));
    grid.append(select('opticsCellWindow', 'Windows', Object.entries(MATERIALS).filter(([k]) => k !== 'ideal').map(([k, m]) => [k, m.name]), o.window, v => apply(i, {window:v}, 'window')));
    grid.append(select('opticsLensCoating', 'Window coating', Object.entries(LENS_COATINGS), o.coating || 'ar', v => apply(i, {coating:v}, 'coating')));
    if (multi) grid.append(select('opticsMirrorCoating', 'Mirror coating', Object.entries(COATINGS).filter(([k]) => k !== 'custom').map(([k, c]) => [k, c.name]), o.mirrorCoating || 'gold', v => apply(i, {mirrorCoating:v}, 'mirrorCoating')));
@@ -316,10 +351,21 @@ export function createOpticsUI(api) {
   if (o.type === 'splitter') lines.push(`Reflects ${fmt(o.reflectance, 0)}% and transmits ${fmt(100 - o.reflectance, 0)}%. Start a second beam on this splitter for the other arm.`);
   if (o.type === 'window') lines.push(o.brewster ? 'At Brewster’s angle: no reflection loss for p-polarised light.' : `${o.coating === 'uncoated' ? 'Uncoated' : 'AR coated'}: transmits ${pct(windowTransmission(o, lambdaHere()))} at ${lambdaHere()} µm.`);
   if (o.type === 'filter') lines.push(`Transmits ${pct(filterTransmission(o, lambdaHere()))} at ${lambdaHere()} µm${o.kind === 'bandpass' ? ` (pass band ${fmt(o.center - o.fwhm / 2)}–${fmt(o.center + o.fwhm / 2)} µm)` : ` (OD ${o.od})`}.`);
+  const cellActions = [];
   if (o.type === 'gascell') {
-   const g = gasAbsorption(o), c = gasCellOptics(o, lambdaHere());
-   lines.push(`Path ${fmt(g.path, 0)} mm${cellPasses(o) > 1 ? ` (${cellPasses(o)} passes of ${fmt(o.length, 0)} mm)` : ' (single pass)'} · ${g.n.toExponential(2)} molecules/cm³ · absorbance ${g.tau.toPrecision(3)}: the gas absorbs ${pct(1 - g.transmission)}.`);
+   const spec = catalog.get(i.assetId)?.cellSpec, ins = cellInsight(o, lambdaHere(), spec?.radius ? spec.radius * RING_SHARE : DEFAULT_RING);
+   const g = ins.gas, c = ins.cell, h = ins.herriott;
+   lines.push(`Path ${fmt(g.path, 0)} mm${ins.passes > 1 ? ` (${ins.passes} passes of ${fmt(o.length, 0)} mm, ${ins.pathGain}× one pass)` : ' (single pass)'} · ${g.n.toExponential(2)} molecules/cm³ · absorbance ${g.tau.toPrecision(3)}: the gas absorbs ${pct(1 - g.transmission)}.`);
    lines.push(`Windows pass ${pct(c.windows)}${c.reflections ? ` · ${c.reflections} mirror reflections pass ${pct(c.mirrors)}` : ''}.`);
+   if (ins.passes > 1) lines.push(`Gas signal ${fmt(ins.signalGain, 1)}× one pass: the path is ${ins.pathGain}× longer, less the light the mirrors lose.${ins.bestPasses !== ins.passes ? ` With these mirrors it peaks at ${ins.bestPasses} passes (${fmt(ins.bestGain, 1)}×).` : ' That is the most these mirrors give.'}`);
+   if (h?.stable) lines.push(`Mirrors R ${fmt(h.roc, 0)} mm, ${fmt(h.spacing, 1)} mm apart: the spots turn ${fmt(h.theta * 180 / Math.PI, 1)}° per pass${h.exit ? `, and the beam leaves after ${h.exit} passes (M = ${h.M})` : ''}. Neighbouring spots are ${fmt(h.spotGap, 1)} mm apart; up to ${h.maxPasses} passes fit with this hole.`);
+   const set = (patch, what) => { apply(i, patch, 'passes'); toast(what); };
+   if (h?.stable && h.design && h.exit !== h.target && h.target <= h.maxPasses) cellActions.push(el('button', {id:'opticsCellSpacing', textContent:`Set spacing for ${h.target} passes`, title:`Moves the mirrors to ${fmt(h.design.spacing, 1)} mm apart (pattern M = ${h.design.M}).`, onclick:() => set({length:+h.design.spacing.toFixed(2)}, `Mirrors set ${fmt(h.design.spacing, 1)} mm apart: the beam now leaves after ${h.target} passes.`)}));
+   if (ins.passes > 1 && ins.bestPasses !== ins.passes && ins.bestGain > ins.signalGain * 1.01) {
+    const d = h?.stable ? herriottDesign(o.mirrorRoc, ins.bestPasses, o.length) : null;
+    if (!h?.stable || d) cellActions.push(el('button', {id:'opticsCellBest', textContent:`Use ${ins.bestPasses} passes`, title:d ? `Sets ${ins.bestPasses} passes with the mirrors ${fmt(d.spacing, 1)} mm apart.` : `Sets the cell to ${ins.bestPasses} passes.`,
+     onclick:() => set({passes:ins.bestPasses, ...(d ? {length:+d.spacing.toFixed(2)} : {})}, `${ins.bestPasses} passes: the gas signal is now ${fmt(ins.bestGain, 1)}× one pass.`)}));
+   }
   }
   if (o.type === 'coupler') lines.push(o.kind === 'pinhole' ? `Pinhole Ø ${o.pinhole} µm.` : `Couples best when the beam arrives as a flat waist of Ø ${o.mfd} µm.`);
   if (o.type === 'detector' && o.responsivity == null) lines.push('Add the range, responsivity and output limit from the datasheet to see the signal and check for saturation.');
@@ -343,7 +389,7 @@ export function createOpticsUI(api) {
   }
   const ends = traces.filter(x => x.b.points.at(-1).itemId === i.id);
   if (o.type !== 'laser' && !traces.length) lines.push(routesThrough(i.id).length ? 'Turn on Physical beam for a beam that uses this part to see sizes here.' : 'No beam uses this part yet. Press Beam and click the laser, this part and the endpoint.');
-  box.replaceChildren(...lines.map(t => el('p', {textContent:t})), ...[...new Set(warn)].map(t => el('p', {className:'opticsWarn', textContent:t})));
+  box.replaceChildren(...lines.map(t => el('p', {textContent:t})), ...[...new Set(warn)].map(t => el('p', {className:'opticsWarn', textContent:t})), ...cellActions);
   if (ends.length) {
    const b = el('button', {id:'opticsToFocus', textContent:'Move to the focus'});
    b.onclick = () => focusRoute(ends[0].b);

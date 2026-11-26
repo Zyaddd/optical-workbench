@@ -10,6 +10,7 @@ import {detachRoutes} from '../src/routes.mjs';
 import {boardPlacements, contains} from '../src/layout.mjs';
 import {BOARD_PRESETS, boardSpec} from '../src/boards.mjs';
 import {itemOptics, validateOptics, defaultType, traceGaussian, focusOnEndpoint, fmtPower, pct, MATERIALS, COATINGS, OPTIC_TYPES} from '../src/optics.mjs';
+import {optimiseBeam, defaultGoal, describeChanges, resultText, plainSummary, GOALS, goalText} from '../src/optimize.mjs';
 
 export const HOLDER = 'lab-adjustable-holder';
 // A standard post holder's top (50.0126 mm) plus the 26 mm optical centre of the standard mounts.
@@ -41,7 +42,7 @@ export const PARTS = {
  'gas-cell': {asset:'default-gas-cell', label:'Gas cell', kind:'transmit', point:{x:0, y:26, z:0},
   about:'Gas cell with windows; its body stretches to optics.length. Single pass by default.'},
  'multipass-cell': {asset:'default-multipass-cell', label:'Multipass cell', kind:'transmit', point:{x:0, y:26, z:0},
-  about:'Herriott multipass cell: optics.length is the distance per pass and optics.passes the pass count.'},
+  about:'Herriott multipass cell: optics.length is the mirror spacing (distance per pass) and optics.passes the pass count. Set optics.mirrorRoc (mirror radius of curvature, mm) to have the pass count follow from the mirror geometry.'},
  'fibre-port': {asset:'default-fibre-port', label:'Fibre port', kind:'end', axis:'+x', point:{x:-16, y:26, z:0},
   about:'FC/PC fibre port at the end of a beam: reports the single-mode coupling efficiency.'},
  'pinhole': {asset:'default-fibre-port', label:'Pinhole', kind:'end', axis:'+x', point:{x:-16, y:26, z:0}, optics:{type:'coupler', kind:'pinhole'},
@@ -561,7 +562,7 @@ function opticsSummary(i, a) {
   case 'splitter': return `R ${o.reflectance}% / T ${100 - o.reflectance}%`;
   case 'window': return `${MATERIALS[o.material]?.name || o.material}${o.brewster ? ', Brewster' : o.coating === 'uncoated' ? ', uncoated' : ', AR coated'}`;
   case 'filter': return o.kind === 'bandpass' ? `bandpass ${o.center} µm, FWHM ${o.fwhm} µm, peak ${o.peak}%` : `ND, OD ${o.od}`;
-  case 'gascell': return `${o.mode === 'multipass' ? `multipass ${o.passes} × ${o.length} mm` : `single pass ${o.length} mm`}, ${o.ppm} ppm, σ ${o.sigma} cm², ${o.pressure} hPa, ${o.temperature} K`;
+  case 'gascell': return `${o.mode === 'multipass' ? `multipass ${o.passes} × ${o.length} mm${o.mirrorRoc ? `, mirrors R ${o.mirrorRoc} mm` : ''}` : `single pass ${o.length} mm`}, ${o.ppm} ppm, σ ${o.sigma} cm², ${o.pressure} hPa, ${o.temperature} K`;
   case 'coupler': return o.kind === 'pinhole' ? `pinhole Ø ${o.pinhole} µm` : `single-mode fibre, MFD ${o.mfd} µm`;
   case 'detector': return `active area ${o.activeArea} mm${o.responsivity ? `, ${o.responsivity} V/W` : ''}${o.maxOutput ? `, max ${o.maxOutput} V` : ''}`;
   default: return 'not optical';
@@ -596,6 +597,8 @@ export function analyze(p, lib, custom, which) {
   if (!t.ok) { out.push(`${b.name}: ${t.error}`); continue; }
   const L = t.laser;
   out.push(`${b.name} (${b.id}): ${L.wavelength} µm, waist Ø ${fmt(L.waistDiameter, 2)} mm, divergence ${fmt(L.divergence, 2)} mrad (full), M² ${L.m2}, ${fmtPower(t.power.start)} at the start.`);
+  const story = plainSummary(t);
+  if (story.length) out.push(`  In short: ${story.join(' ')}`);
   for (const q of t.points) {
    const bits = [`${fmt(q.s - t.start, 1)} mm`, `beam Ø ${fmt(q.d, 2)} mm`];
    if (q.powerIn != null && q.index > 0) bits.push(q.powerOut != null && Math.abs(q.powerOut - q.powerIn) > 1e-9 ? `${fmtPower(q.powerIn)} → ${fmtPower(q.powerOut)}` : fmtPower(q.powerIn));
@@ -606,14 +609,50 @@ export function analyze(p, lib, custom, which) {
    if (q.captured != null) bits.push(`${pct(q.captured)} lands on the active area: ${fmtPower(q.detectedPower)}${q.signal != null ? ` → ${q.signal.toFixed(3)} V` : ''}${q.saturated ? ' (saturated)' : ''}`);
    if (q.coupling != null) bits.push(`${q.couplerKind === 'pinhole' ? 'pinhole passes' : 'fibre coupling'} ${pct(q.coupling)}${q.coupledPower != null ? ` = ${fmtPower(q.coupledPower)}` : ''}`);
    out.push(`  ${q.index}. ${q.name}: ${bits.join('; ')}`);
+   if (q.insight) out.push(...cellLines(q.insight).map(l => `     ${l}`));
   }
   for (const w of t.waists) out.push(`  Waist Ø ${fmt(w.d * 1000, 0)} µm at ${fmt(w.s - t.start, 1)} mm along the beam (x ${fmt(w.world[0])}, z ${fmt(w.world[2])}).`);
   if (t.power.gasSignal != null) out.push(`  Gas absorption signal at the detector: ${t.power.gasSignal.toFixed(4)} V.`);
   else if (t.power.gasDelta != null) out.push(`  Gas takes ${fmtPower(t.power.gasDelta)} from the detected power.`);
   if (t.alignment.length) out.push(`  Alignment: tilting ${t.alignment[0].name} by 1 mrad moves the end spot ${fmt(t.alignment[0].shift, 0)} µm${t.alignment.length > 1 ? `; ${t.alignment.slice(1, 3).map(m => `${m.name} ${fmt(m.shift, 0)} µm`).join(', ')}` : ''}.`);
   for (const w of t.warnings) out.push(`  Warning: ${w}`);
+  // What the optimiser could do for this beam's natural goal, without changing anything.
+  const idea = optimiseBeam(p, b, a, {goal:defaultGoal(t)});
+  if (idea.ok && idea.changes.length && idea.gain > 1.05) out.push(`  Idea: optimize_setup with goal "${idea.goal}" would raise the ${GOALS[idea.goal].what} ${idea.gain.toFixed(2)}× (${goalText(idea.goal, idea.before)} → ${goalText(idea.goal, idea.after)}) by: ${describeChanges(idea).join('; ')}.`);
  }
  return out.join('\n');
+}
+// A multipass cell in numbers: the path, the gain over one pass, and what its mirror geometry does.
+export function cellLines(i) {
+ const lines = [`Path ${fmt(i.passes)} passes × ${fmt(i.perPass)} mm = ${fmt(i.path / 1000, 3)} m, ${fmt(i.pathGain)}× one pass. Gas signal ${fmt(i.signalGain, 2)}× one pass (mirrors ${pct(i.mirrorReflectance)} each, ${pct(i.cell.mirrors)} after all bounces).`];
+ if (i.passes > 1 && i.bestPasses !== i.passes) lines.push(`With these mirrors the gas signal peaks at ${i.bestPasses} passes (${fmt(i.bestGain, 2)}× one pass)${i.herriott?.stable ? '' : '; more passes lose more light at the mirrors than the extra path gains'}.`);
+ const h = i.herriott;
+ if (h?.stable) lines.push(`Mirror geometry: R ${fmt(h.roc)} mm, ${fmt(h.spacing)} mm apart → the spot ring turns ${fmt(h.theta * 180 / Math.PI, 2)}° per pass; ${h.exit ? `the beam leaves through the hole after ${h.exit} passes (pattern M = ${h.M})` : 'the beam does not come back to the hole'}; neighbouring spots ${fmt(h.spotGap, 1)} mm apart on a ${fmt(h.ring, 1)} mm ring; at most ${h.maxPasses} passes fit with the Ø ${fmt(2 * h.hole, 1)} mm hole.${h.design && h.target <= h.maxPasses && h.exit !== h.target ? ` ${h.target} passes need ${fmt(h.design.spacing, 2)} mm spacing.` : ''}`);
+ else if (h) lines.push(`Mirror geometry: R ${fmt(h.roc)} mm mirrors ${fmt(h.spacing)} mm apart cannot hold the beam (needs less than ${fmt(2 * h.roc)} mm).`);
+ return lines;
+}
+
+// ---------- Optimising ----------
+// Improve a beam for a goal and, unless apply is false, make the changes: parts slide with their holders.
+export function optimise(p, lib, custom, {goal, beam, parts, apply = true} = {}) {
+ const a = assetOf(lib, custom), physics = (p.beams || []).filter(b => b.physics);
+ let b = beam ? findBeam(p, beam) : null;
+ if (!b) {
+  if (!physics.length) throw Error('There is no physical beam to optimise. Build one with build_beam_path first.');
+  b = goal === 'absorption' ? physics.find(x => traceGaussian(x, p.items, a, p.beams).points?.some(q => q.gas)) || physics[0] : physics[0];
+ }
+ const only = Array.isArray(parts) && parts.length ? new Set(parts.map(r => findItem(p, r).id)) : null;
+ const r = optimiseBeam(p, b, a, {goal, only});
+ if (r.ok && apply) for (const c of r.changes) {
+  const item = p.items.find(i => i.id === c.id);
+  if (c.kind === 'position') {
+   const at = opticalPoint(p, item, lib).world;
+   moveTo(p, lib, item, at.x + c.move[0], at.z + c.move[1]);
+   if (item.mount) tidyHolders(p, lib, new Set([item.mount.holderId]));
+  } else setOptics(item, a(item.assetId), c.length != null ? {passes:c.to, length:c.length} : {passes:c.to});
+ }
+ const head = r.ok ? `${b.name} (${b.id}), goal "${r.goal}" (${GOALS[r.goal].label.toLowerCase()}): ${resultText(r)}` : `${b.name}: ${r.reason}`;
+ return {beam:b, result:r, text:[head, ...(r.ok ? describeChanges(r).map(l => '- ' + l) : []), r.ok && r.changes.length && !apply ? 'Nothing was changed (apply was false).' : ''].filter(Boolean).join('\n')};
 }
 
 // ---------- Catalogue text ----------
@@ -630,7 +669,7 @@ export function catalogue(lib) {
   `- mirror: coating (${Object.keys(COATINGS).join(', ')}), reflectance % with coating custom, aperture mm. concave-mirror: roc mm (radius of curvature). parabolic-mirror: focal mm (reflected focal length), offAxis degrees.`,
   '- beam-splitter: reflectance % (the rest is transmitted), aperture mm.',
   '- window: material, coating ar|uncoated, brewster true|false.  filter: kind nd with od, or kind bandpass with center µm, fwhm µm, peak %.',
-  '- gas-cell / multipass-cell: mode single|multipass, length mm (per pass), passes (multipass), ppm, sigma cm² (line cross-section), pressure hPa, temperature K, window material, mirrorCoating.',
+  '- gas-cell / multipass-cell: mode single|multipass, length mm (per pass: the mirror spacing), passes (multipass), mirrorRoc mm (multipass mirror radius of curvature: the passes then follow from the geometry, cos θ = 1 − length/mirrorRoc, and passes is the target), aperture mm (the coupling hole), ppm, sigma cm² (line cross-section), pressure hPa, temperature K, window material, mirrorCoating.',
   '- fibre-port / pinhole: kind fibre|pinhole, mfd µm (fibre mode field diameter), pinhole µm.',
   '- detector: activeArea mm (side of the square element), responsivity V/W, maxOutput V, rangeMin and rangeMax µm.',
   '', `Boards for new_setup: MB1218 (457.2 × 304.8 mm, default), ${BOARD_PRESETS.map(b => `${b.id} (${b.name})`).join(', ')}, or {width, depth, pitch} in mm.`);
